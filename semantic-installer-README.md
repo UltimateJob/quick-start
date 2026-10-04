@@ -51,7 +51,7 @@ python3 semantic_installer.py --reset-status        # 清空步骤状态
 | 国内镜像 | `APT_MIRROR`, `GO_DL_MIRROR`, `GO_PROXY`, `NODE_MIRROR`, `NODE_VERSION`, `NPM_REGISTRY`, `GITHUB_PROXY` (见下, **全部置空即直连**) |
 | 渲染后端 | `SEMANTIC_MUJOCO_GL` (`egl` 默认 / `osmesa`) |
 | 服务地址 | `SERVER_HTTP`, `SERVER_WS`, `WEB_URL`, `ABILITY_PORT_FIRST/LAST`, `READINESS_TIMEOUT` |
-| 仓库分支 | 10 个仓库的联调分支名 (另有 3 个 ability-framework 仓库固定按版本清单切, 不开放设置) |
+| 仓库分支 | 11 个仓库的联调分支名 (另有 3 个 ability-framework 仓库固定按版本清单切, 不开放设置) |
 | 扩展场景 (阶段 8) | `EXTENSION` (`none` 默认 / `libero` / `isaac`), `LIBERO_*` / `ISAAC_*` 设置组, `HF_ENDPOINT`, `GPU_MODE`, `CPU_ACTIONS_PER_CHUNK`, `CPU_THREADS` |
 
 保存于 `installer-settings.json`; 同时生成 `semantic-env.sh`, 可在任意终端 `source semantic-env.sh`。

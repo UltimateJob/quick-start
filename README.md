@@ -4,7 +4,7 @@
 
 > R1 Pro maintenance models are now available through the pinned asset repository's Git LFS. See [publication scope](PUBLICATION.md) for third-party attribution. Component and installer archives are published through GitHub Releases with their original notices.
 
-🚀 Build and run Semantic: a workspace that connects a web Studio, an orchestration server, robot skills, abilities, and simulation. This repository coordinates 13 component repositories; it is not the server itself.
+🚀 Build and run Semantic: a workspace that connects a web Studio, an orchestration server, robot skills, abilities, and simulation. This repository coordinates 14 component repositories; it is not the server itself.
 
 A native **macOS Apple Silicon / macOS 15.5+** installer preview is also available. See [installation and validation scope](#native-macos-installer-apple-silicon-preview); physical Mac graphics qualification is pending.
 
@@ -208,7 +208,7 @@ Each component has its own English/Chinese README. Repository names and local di
 
 ## Versions and daily use
 
-**Recommended build version: `v0.1.0`.** Run `git checkout v0.1.0` before building with the installer. The [repo-versions.json at this tag](https://github.com/insightos-community/quick-start/blob/v0.1.0/repo-versions.json) is the usable, verified component baseline and pins all 13 repositories to tags and commit SHAs. For an existing clone, run `git fetch origin --tags` first.
+**Recommended build version: `v0.1.0`.** Run `git checkout v0.1.0` before building with the installer. The [repo-versions.json](repo-versions.json) is the usable, verified component baseline and pins all 14 repositories to specific revisions. For an existing clone, run `git fetch origin --tags` first.
 
 Releases and future mirror synchronization stay on the verified maintenance baseline, not the newest upstream/default branch. Use the exact tags and commits in `repo-versions.json`; see the [release policy](maintenance/release-policy.md) and [v0.1.3 record](maintenance/v0.1.3.md).
 

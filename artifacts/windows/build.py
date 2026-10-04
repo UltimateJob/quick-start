@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright 2026 InsightOS
+# SPDX-License-Identifier: Apache-2.0
 """Assemble a Windows x64 offline installer from pinned native inputs."""
 import argparse
 import importlib.util

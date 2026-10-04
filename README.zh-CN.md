@@ -6,7 +6,7 @@
 另提供 **macOS Apple Silicon / macOS 15.5+ 原生安装包预览版**，见[安装方法与验证范围](#macos-原生安装包apple-silicon-预览版)。真机图形渲染仍待验收。
 > R1 Pro 旧业务模型现已通过清单锁定的资产仓库提供 Git LFS 下载。第三方来源声明见[发布范围](PUBLICATION.md)。组件与整包通过 GitHub Releases 发布，下载时保留第三方来源和许可声明。
 
-🚀 构建并运行 Semantic：连接 Web Studio、调度服务、机器人 Skill、Ability 与仿真的开发工作区。本仓库协调 13 个组件仓库，本身不是 Server。
+🚀 构建并运行 Semantic：连接 Web Studio、调度服务、机器人 Skill、Ability 与仿真的开发工作区。本仓库协调 14 个组件仓库，本身不是 Server。
 
 ### 应用图标与本地卸载
 
@@ -204,7 +204,7 @@ python3 semantic_installer.py
 
 ## 版本与日常使用
 
-**推荐构建版本：`v0.1.0`。** 请先 `git checkout v0.1.0`，再运行安装器进行构建。该 Tag 中的 [repo-versions.json](https://github.com/insightos-community/quick-start/blob/v0.1.0/repo-versions.json) 是可用、已验证的组件版本组合，固定了全部 13 个仓库的 Tag 与提交 SHA。已有克隆请先执行 `git fetch origin --tags`。
+**推荐构建版本：`v0.1.0`。** 请先 `git checkout v0.1.0`，再运行安装器进行构建。本仓库的 [repo-versions.json](repo-versions.json) 是可用、已验证的组件版本组合，固定了全部 14 个仓库的修订版本。已有克隆请先执行 `git fetch origin --tags`。
 
 发布及后续镜像同步均基于已验证的维护版本，不跟随上游或默认分支的领先版本。请使用 `repo-versions.json` 固定的 Tag 与提交，详见[发布策略](maintenance/release-policy.md)和 [v0.1.3 记录](maintenance/v0.1.3.md)。
 
