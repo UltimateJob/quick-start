@@ -10,8 +10,8 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# Release downloads and assembled packages
-.release-cache/
+# 预编译安装树的下载与组装产物（artifacts/ 是源码，下面这些是构建输出）
 artifacts/releases/
 artifacts/.build/
 artifacts/channels/
+.release-cache/

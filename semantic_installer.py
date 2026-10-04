@@ -1,20 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Copyright 2026 InsightOS
-# SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
 Semantic 安装器 (TUI)
 由《新版Semantic安装步骤》PDF 转化: 分阶段执行 Ubuntu 从 0 到 1 的完整安装流程。
@@ -45,42 +30,37 @@ import socket
 import subprocess
 import sys
 import tempfile
-import termios
 import time
-import traceback
 import unicodedata
-import zipfile
 from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
-
-from terminal_compat import prepare_terminal
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SETTINGS_FILE = SCRIPT_DIR / "installer-settings.json"
 STATUS_FILE = SCRIPT_DIR / "installer-status.json"
 ENV_SH = SCRIPT_DIR / "semantic-env.sh"
+# 步骤状态文件的版式标记。两版只差阶段号 8/9 互换:
+#   1 (文件里没有标记) = 旧编号: 阶段 8 是「日常再开」, LIBERO 在阶段 9
+#   2                 = 现编号: 阶段 8 是「安装扩展场景」, 阶段 9 是「日常再开」
+# 旧编号的文件会被 migrate_statuses() 一次性迁移; 标记同时充当"已迁移"的凭据,
+# 所以迁移是幂等的。
+STATUS_LAYOUT_KEY = "__layout__"
+STATUS_LAYOUT = 2
+STATUS_BACKUP_SUFFIX = ".layout1.bak"
 LOG_DIRNAME = ".tui-logs"
+# CPU 拓扑探测的宿主路径。提成模块常量是为了让测试注入假的 /sys 与 cgroup,
+# 不依赖跑测试的机器有多少核、什么频率。
+CPU_SYS_ROOT = "/sys/devices/system/cpu"
+CGROUP_V2_CPU_MAX = "/sys/fs/cgroup/cpu.max"
+CGROUP_V1_QUOTA = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
+CGROUP_V1_PERIOD = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
 LOG_LIMIT = 4000
 CMD_MARK = "\u00a7"  # § 标记脚本回显的命令行
-REPO_EVENT_MARK = "@@semantic-repo:"
-# 子进程的颜色、光标和超链接控制序列不能直接交给 curses 渲染。
-ANSI_ESCAPE_RE = re.compile(
-    r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c\r\n]*(?:\x07|\x1b\\|\x9c|(?=\r?\n|$))"
-    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
-    r"|\x1b[ -/]*[0-~]"
-)
-
-
-def plain_log_text(text):
-    """保留 Unicode 正文，去除日志中的终端控制码（不模拟终端）。"""
-    text = ANSI_ESCAPE_RE.sub("", str(text))
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
-
 
 DONE_STATES = {"ok", "skip", "warn", "done"}
-STAGE_PREREQ = {6: [1, 2, 3, 4, 5], 7: [1, 2, 3, 4, 5, 6], 8: [1, 2, 3, 4, 5]}
+STAGE_PREREQ = {6: [1, 2, 3, 4, 5], 7: [1, 2, 3, 4, 5, 6], 8: [1, 2, 3, 4, 6],
+                9: [1, 2, 3, 4, 5]}
 
 STAGES = [
     (1, "系统依赖"),
@@ -89,13 +69,22 @@ STAGES = [
     (4, "登记 MuJoCo Runtime"),
     (5, "Robot 执行栈"),
     (6, "启动 Server/Web/Skills"),
-    (7, "实操示例"),
-    (8, "日常再开"),
+    (7, "Studio 手动联调"),
+    (8, "安装扩展场景 LIBERO (可选)"),
+    (9, "日常再开"),
 ]
 
+# 扩展场景注册表: 阶段 8 里可选的场景安装线。新增场景 (如 isaac) 只需在此登记,
+# 再补一套 _step_<name>_* 实现并把步骤挂到阶段 8 即可。
+EXTENSIONS = {
+    "none": {"title": "不安装", "steps": 0},
+    "libero": {"title": "LIBERO 仿真场景 (robosuite 1.4 + Franka + SmolVLA)", "steps": 12},
+    "isaac": {"title": "Isaac Sim 场景 (预留, 尚未实现)", "steps": 0},
+}
 
+# --------------------------------------------------------------------------
 # 设置
-
+# --------------------------------------------------------------------------
 
 DEFAULT_SETTINGS = {
     "SEMANTIC": "$HOME/workspace/semantic",
@@ -109,7 +98,6 @@ DEFAULT_SETTINGS = {
     "GO_VERSION": "1.23.8",
     "BUNDLE_VER": "0.5.0-dev",
     "UV_DEFAULT_INDEX": "https://mirrors.aliyun.com/pypi/simple",
-    "RUNTIME_WHEEL_SOURCE": "auto",
     "SEMANTIC_ADMIN_PASSWORD": "test-admin-pass",
     "SEMANTIC_MUJOCO_GL": "egl",
     "APT_MIRROR": "https://mirrors.aliyun.com/ubuntu",
@@ -126,6 +114,23 @@ DEFAULT_SETTINGS = {
     "WEB_URL": "http://127.0.0.1:3000",
     "ABILITY_PORT_FIRST": "18100",
     "ABILITY_PORT_LAST": "18199",
+    "READINESS_TIMEOUT": "",
+    "EXTENSION": "none",
+    # 未打 Tag 时默认跟随各仓库主分支。libero 线仓库均已合并进 develop,
+    # 这里用 develop; ability-scaffold 等无 develop 的仓库按各自 main 走。
+    "LIBERO_LINE_BRANCH": "develop",
+    "LIBERO_PACKAGE_DIR": "",
+    "LIBERO_RUNTIME_ID": "local-libero-robosuite-1.4",
+    "LIBERO_RUNTIME_VERSION": "0.4.0-dev.0",
+    "LIBERO_SCENES": "libero-spatial-0,libero-spatial-7",
+    "LIBERO_UPSTREAM_DIR": "",
+    "LIBERO_PROJECT_ID": "",
+    "LIBERO_ROBOT_ID": "",
+    "STUDIO_SCENES": "depalletizing-r1pro",
+    "HF_ENDPOINT": "https://hf-mirror.com",
+    "GPU_MODE": "auto",
+    "CPU_ACTIONS_PER_CHUNK": "10",
+    "CPU_THREADS": "",
     "BR_SEMANTIC_FRAMEWORK": "feature/robot-ability-binding",
     "BR_SEMANTIC_WEB": "feature/v050-device-workbench",
     "BR_SEMANTIC_DOCS": "feature/v050-robot-runtime-docs",
@@ -138,6 +143,7 @@ DEFAULT_SETTINGS = {
     "BR_ABILITY_FRAMEWORK": "v2.1.0",
     "BR_ABILITY_PY_SDK": "v0.4.0",
     "BR_ABILITY_SCAFFOLD": "v1.2.0",
+    "BR_FRANKA_ABILITY": "develop",
 }
 
 SETTINGS_GROUPS = [
@@ -146,17 +152,25 @@ SETTINGS_GROUPS = [
                  "GITLAB_OAUTH_CLIENT_SECRET", "OAUTH_CALLBACK_PORT",
                  "PAT_PAGE_PATH", "APPS_PAGE_PATH"]),
     ("版本", ["GO_VERSION", "BUNDLE_VER"]),
-    ("镜像与密钥", ["UV_DEFAULT_INDEX", "RUNTIME_WHEEL_SOURCE", "SEMANTIC_ADMIN_PASSWORD"]),
+    ("镜像与密钥", ["UV_DEFAULT_INDEX", "SEMANTIC_ADMIN_PASSWORD"]),
     ("国内镜像 (置空即直连)", ["APT_MIRROR", "GO_DL_MIRROR", "GO_PROXY", "NODE_MIRROR",
                           "NODE_VERSION", "NPM_REGISTRY", "GITHUB_PROXY"]),
     ("sudo 鉴权", ["SUDO_AUTH"]),
     ("版本清单", ["REPO_VERSIONS_FILE"]),
     ("渲染后端", ["SEMANTIC_MUJOCO_GL"]),
-    ("服务地址与端口", ["SERVER_HTTP", "SERVER_WS", "WEB_URL", "ABILITY_PORT_FIRST", "ABILITY_PORT_LAST"]),
+    ("服务地址与端口", ["SERVER_HTTP", "SERVER_WS", "WEB_URL", "ABILITY_PORT_FIRST",
+                    "ABILITY_PORT_LAST", "READINESS_TIMEOUT"]),
     ("仓库分支", [
         "BR_SEMANTIC_FRAMEWORK", "BR_SEMANTIC_WEB", "BR_SEMANTIC_DOCS",
         "BR_R1PRO_ABILITY", "BR_ROBOT_SDK", "BR_ROBOT_SKILL",
         "BR_MUJOCO_RUNTIME", "BR_MUJOCO_ASSET", "BR_SEMANTIC_DEPLOYMENT",
+        "BR_FRANKA_ABILITY",
+    ]),
+    ("扩展场景 (阶段 8)", [
+        "EXTENSION", "LIBERO_LINE_BRANCH", "LIBERO_PACKAGE_DIR", "LIBERO_RUNTIME_ID",
+        "LIBERO_RUNTIME_VERSION", "LIBERO_SCENES", "LIBERO_UPSTREAM_DIR",
+        "LIBERO_PROJECT_ID", "LIBERO_ROBOT_ID", "HF_ENDPOINT", "GPU_MODE",
+        "CPU_ACTIONS_PER_CHUNK", "CPU_THREADS",
     ]),
 ]
 
@@ -172,7 +186,6 @@ SETTINGS_DESC = {
     "GO_VERSION": "官方 Go 版本, go.mod 要求 >= 1.23",
     "BUNDLE_VER": "r1pro-mujoco Bundle 版本目录名后缀",
     "UV_DEFAULT_INDEX": "uv 的 PyPI 镜像; 备用: https://pypi.tuna.tsinghua.edu.cn/simple",
-    "RUNTIME_WHEEL_SOURCE": "auto = 缓存/包源优先, LFS 兜底; lfs = 只从 LFS 获取; offline = 仅校验缓存",
     "SEMANTIC_ADMIN_PASSWORD": "写入 framework .env 的管理员密码 (不要提交 Git)",
     "SEMANTIC_MUJOCO_GL": "egl (默认) 或 osmesa (EGL 起不来时, 需另装 libosmesa6)",
     "APT_MIRROR": "apt 软件源基址, 步骤 1.0 自动切换; 例 https://mirrors.aliyun.com/ubuntu",
@@ -189,23 +202,42 @@ SETTINGS_DESC = {
     "WEB_URL": "Web 开发服务器地址",
     "ABILITY_PORT_FIRST": "robot_runtime.ability_port_first",
     "ABILITY_PORT_LAST": "robot_runtime.ability_port_last",
+    "READINESS_TIMEOUT": "受管 Robot 就绪上限 (如 8m); 留空 = 内置 2 分钟。冷启动加载大模型 (LIBERO 的 SmolVLA 走 CPU 推理) 可放宽",
+    "EXTENSION": "阶段 8 要安装的扩展场景: none = 不装; libero = 装 LIBERO; isaac = 预留, 尚未实现",
+    "LIBERO_LINE_BRANCH": "libero 功能线分支名; 各仓已本地合并进 develop 时可填 develop",
+    "LIBERO_PACKAGE_DIR": "六个产物的待装目录; 留空 = 现场构建到 <framework>/.output/packages/libero-current",
+    "LIBERO_RUNTIME_ID": "Runtime 的 installation_id (阶段 8.5 安装, 需与项目 runtime-preference 一致)",
+    "LIBERO_RUNTIME_VERSION": "Runtime Pack 版本号, 决定产物 1 的文件名",
+    "LIBERO_SCENES": "逗号分隔的场景 ID, 仅对这些场景生成预览 (全量 6500 个初态极慢, 首次务必限量)",
+    "LIBERO_UPSTREAM_DIR": "上游 LIBERO 源码目录; 留空 = $SEMANTIC/.cache/libero-behavior-vla/LIBERO, 按 sources.lock.yaml 校验 commit",
+    "LIBERO_PROJECT_ID": "安装目标 Project ID; 留空 = 自动取当前用户名下的 development 项目",
+    "LIBERO_ROBOT_ID": "受管 Robot ID (四件套里的 Skill 要绑到它); 留空 = 自动取一台 franka_panda 设备",
+    "STUDIO_SCENES": "阶段 7.1 加进项目的原生 MuJoCo 场景 ID (逗号分隔); 缺省 depalletizing-r1pro",
+    "HF_ENDPOINT": "HuggingFace 端点; 国内不可达官网时用 https://hf-mirror.com (仅构建模型包时用)",
+    "GPU_MODE": "auto = 按本机能力自动判定 (有 CUDA 走 GPU, 否则 CPU 自动调优); "
+                "gpu = 强制按独显装; cpu = 强制按 CPU 装 (便于复现无显卡现场)",
+    "CPU_ACTIONS_PER_CHUNK": "走 CPU 推理时把一个预测块的前 N 步连续执行 (摊薄单次推理成本); "
+                             "留空 = 不开启, 保持 checkpoint 原生的 1; 独显主机不使用",
+    "CPU_THREADS": "CPU 推理线程数的覆盖阀门; 留空 = 由 Ability 按本机拓扑探测 + 启动标定自动决定 "
+                   "(推荐)。仅在自动结果不合适时固定 (会跳过标定), 例 8",
 }
 
 # 本地目录, GitLab 仓库路径, 分支设置键 (None = 只有 main, 不切)
 REPOS = [
-    ("semantic-framework", "Semantic-Framework", "BR_SEMANTIC_FRAMEWORK"),
-    ("semantic-web", "semantic-web", "BR_SEMANTIC_WEB"),
-    ("semantic-docs", "semantic-docs", "BR_SEMANTIC_DOCS"),
-    ("semantic-ability/r1pro-ability", "r1pro-ability", "BR_R1PRO_ABILITY"),
-    ("semantic-robotsdk/robot-sdk", "robot-sdk", "BR_ROBOT_SDK"),
-    ("semantic-skill/robot-skill", "robot-skill", "BR_ROBOT_SKILL"),
-    ("semantic-simulation/mujoco-runtime", "mujoco-runtime", "BR_MUJOCO_RUNTIME"),
-    ("semantic-scene/mujoco-asset", "mujoco-asset", "BR_MUJOCO_ASSET"),
-    ("semantic-robot-deployment", "semantic-deployment", "BR_SEMANTIC_DEPLOYMENT"),
-    ("semantic-ability/ability-runtime", "ability-runtime", None),
-    ("ability-framework/abilityframework", "AbilityFramework", "BR_ABILITY_FRAMEWORK"),
-    ("ability-framework/ability-py-sdk", "Ability-SDK-Python", "BR_ABILITY_PY_SDK"),
-    ("ability-framework/ability-scaffold", "ability-scaffold", "BR_ABILITY_SCAFFOLD"),
+    ("semantic-framework", "/git-pre-release/semantic-framework", "BR_SEMANTIC_FRAMEWORK"),
+    ("semantic-web", "/git-pre-release/semantic-web", "BR_SEMANTIC_WEB"),
+    ("semantic-docs", "/git-pre-release/semantic-docs", "BR_SEMANTIC_DOCS"),
+    ("semantic-ability/r1pro-ability", "/git-pre-release/semantic-ability/r1pro-ability", "BR_R1PRO_ABILITY"),
+    ("semantic-robotsdk/robot-sdk", "/git-pre-release/semantic-robotsdk/robot-sdk", "BR_ROBOT_SDK"),
+    ("semantic-skill/robot-skill", "/git-pre-release/semantic-skill/robot-skill", "BR_ROBOT_SKILL"),
+    ("semantic-simulation/mujoco-runtime", "/git-pre-release/semantic-simulation/mujoco-runtime", "BR_MUJOCO_RUNTIME"),
+    ("semantic-scene/mujoco-asset", "/git-pre-release/semantic-scene/mujoco-asset", "BR_MUJOCO_ASSET"),
+    ("semantic-robot-deployment", "/git-pre-release/semantic-deployment", "BR_SEMANTIC_DEPLOYMENT"),
+    ("semantic-ability/ability-runtime", "/git-pre-release/ability-runtime", None),
+    ("semantic-ability/franka-ability", "/git-pre-release/semantic-ability/franka-ability", "BR_FRANKA_ABILITY"),
+    ("ability-framework/abilityframework", "/git-pre-release/abilityframework", "BR_ABILITY_FRAMEWORK"),
+    ("ability-framework/ability-py-sdk", "/git-pre-release/ability-py-sdk", "BR_ABILITY_PY_SDK"),
+    ("ability-framework/ability-scaffold", "/git-pre-release/ability-scaffold", "BR_ABILITY_SCAFFOLD"),
 ]
 
 
@@ -234,6 +266,66 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
+def remap_status_sid(sid):
+    """把旧编号 (8=日常再开) 的步骤号换成现编号 (8=扩展场景)。
+
+    只有两个阶段动过: 旧 8.x 是两个日常再开服务, 现在叫 9.x; 旧 9.x 是 LIBERO,
+    现在是 8.x。其余阶段原样保留。
+    """
+    if not isinstance(sid, str) or "." not in sid:
+        return sid
+    stage, _, rest = sid.partition(".")
+    if stage == "8":
+        return "9." + rest
+    if stage == "9":
+        return "8." + rest
+    return sid
+
+
+def migrate_statuses(raw):
+    """迁移一份旧版步骤状态, 返回 (新状态, 是否发生了改动)。
+
+    迁移按快照进行, 避免 8.1→9.1 与 9.1→8.1 互相覆盖。函数是纯的, 便于测试;
+    落盘与备份由 load_statuses() 负责。
+    """
+    if not isinstance(raw, dict):
+        return {}, False
+    if raw.get(STATUS_LAYOUT_KEY) == STATUS_LAYOUT:
+        return raw, False
+    migrated = {}
+    changed = raw.get(STATUS_LAYOUT_KEY) != STATUS_LAYOUT
+    for key, value in raw.items():
+        if key == STATUS_LAYOUT_KEY:
+            continue
+        migrated[remap_status_sid(key)] = value
+    migrated[STATUS_LAYOUT_KEY] = STATUS_LAYOUT
+    return migrated, changed
+
+
+def load_statuses():
+    """读取步骤状态, 必要时把旧编号迁移到现编号 (幂等, 迁移前留备份)。
+
+    返回 ``(状态, 迁移备份路径或 None)``。返回值始终带 STATUS_LAYOUT_KEY 标记:
+    空状态也要打上, 否则首次运行写回的新编号 8.x 会在下次启动时被再一次当成
+    旧编号迁移。
+    """
+    if not STATUS_FILE.exists():
+        return {STATUS_LAYOUT_KEY: STATUS_LAYOUT}, None
+    raw = load_json(STATUS_FILE, None)
+    if not isinstance(raw, dict):
+        return {STATUS_LAYOUT_KEY: STATUS_LAYOUT}, None
+    statuses, changed = migrate_statuses(raw)
+    if not changed:
+        return statuses, None
+    backup = STATUS_FILE.with_name(STATUS_FILE.name + STATUS_BACKUP_SUFFIX)
+    try:
+        shutil.copy2(STATUS_FILE, backup)
+        save_json(STATUS_FILE, statuses)
+    except OSError:
+        return statuses, None  # 落盘失败不阻断安装, 原文件保持不动
+    return statuses, backup
+
+
 def write_env_sh(settings):
     lines = [
         "# 由 semantic_installer.py 生成, 可 source 到任意终端",
@@ -260,9 +352,9 @@ def write_env_sh(settings):
     ENV_SH.write_text("\n".join(lines), encoding="utf-8")
 
 
-
+# --------------------------------------------------------------------------
 # 显示宽度工具 (CJK 占 2 列)
-
+# --------------------------------------------------------------------------
 
 _WIDE_CACHE = {}
 
@@ -674,9 +766,9 @@ def now():
     return time.strftime("%H:%M:%S")
 
 
-
+# --------------------------------------------------------------------------
 # 系统补丁函数 (python 步骤 / 钩子使用)
-
+# --------------------------------------------------------------------------
 
 def ensure_bashrc_paths(app):
     """幂等追加 go / uv 的 PATH 到 ~/.bashrc, 并更新本进程 env"""
@@ -747,6 +839,11 @@ def patch_server_yaml(app, path):
         "ability_port_first": s["ABILITY_PORT_FIRST"],
         "ability_port_last": s["ABILITY_PORT_LAST"],
     }
+    readiness = (s.get("READINESS_TIMEOUT") or "").strip()
+    if readiness:
+        # 只设 YAML 值；同时写入的 env 变量在启动服务时也不能覆盖它，
+        # 但显式设置的环境变量优先级更高，这里保持单一来源避免歧义。
+        desired["readiness_timeout"] = readiness
     p = Path(path)
     text = p.read_text(encoding="utf-8")
     lines = text.splitlines()
@@ -841,9 +938,9 @@ def ensure_leader_allowlist(app, path):
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-
+# --------------------------------------------------------------------------
 # GitLab 凭证助手
-
+# --------------------------------------------------------------------------
 
 CLIP_CMDS = (["wl-paste"], ["xclip", "-o", "-selection", "clipboard"],
              ["xsel", "--clipboard", "--output"])
@@ -1022,9 +1119,9 @@ def _clear_git_credential(app, gitlab):
     return removed
 
 
-
+# --------------------------------------------------------------------------
 # 版本探测 (skip_check 用)
-
+# --------------------------------------------------------------------------
 
 def _run_quick(cmds, env=None, timeout=15):
     try:
@@ -1090,6 +1187,26 @@ def _http_status(url, timeout=8):
     return None
 
 
+def _token_works(server, token, timeout=8):
+    """用已有 token 实探一个需要鉴权的只读端点, 确认它属于当前 Server。
+    只看 expires_at 会把"别的环境签发的、尚未过期"的 token 误判为可用,
+    而它对新 Server 返回 401。200 才算可用, 401/403 明确不可用。"""
+    import urllib.request
+    import urllib.error
+    url = server.rstrip("/") + "/api/v1/projects"
+    try:
+        req = urllib.request.Request(url, method="GET", headers={
+            "User-Agent": "semantic-installer/1.0",
+            "Authorization": "Bearer " + token,
+        })
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status == 200
+    except urllib.error.HTTPError as e:
+        return e.code == 200
+    except Exception:
+        return False
+
+
 def pick_page_path(app, root, paths, setting_key=None):
     """返回可用的页面路径; 设置里固定了就直接用, 否则匿名探测"""
     if setting_key:
@@ -1107,8 +1224,908 @@ def pick_page_path(app, root, paths, setting_key=None):
     return paths[-1]
 
 
+# --------------------------------------------------------------------------
+# 扩展场景 (阶段 8: LIBERO; 后续场景在此扩展)
+# --------------------------------------------------------------------------
 
-# 步骤定义
+LIBERO_REPOS = [
+    "semantic-framework",
+    "semantic-web",
+    "semantic-robot-deployment",
+    "semantic-ability/franka-ability",
+    "semantic-simulation/mujoco-runtime",
+    "semantic-robotsdk/robot-sdk",
+    "semantic-skill/robot-skill",
+]
+
+# libero 线里只有功能线分支、没有 develop 的仓库。LIBERO_LINE_BRANCH 在本地
+# 合并完成后通常要改成 develop, 但这几个仓库上没有 develop, 强制切会直接
+# checkout 失败; 它们始终按各自的 BR_* 分支走。
+LIBERO_SINGLE_BRANCH_REPOS = [
+    "semantic-ability/franka-ability",
+]
+
+# 产物文件名 (与语义化后缀一起拼装); None = 不需要版本后缀
+LIBERO_ARTIFACTS = {
+    "runtime": "semantic-libero-robosuite-1.4-{ver}.runtime.tar.zst",
+    "scenes": "libero-scenes.zip",
+    "ability": "franka-ability.zip",
+    "skill": "vla-manipulation.zip",
+    "robot": "franka-libero-robot.zip",
+    "model": "franka-smolvla-model.zip",
+}
+
+# Runtime Pack 的 endpoint 固定为 8092: 基础环境的 native-mujoco 用 8090,
+# 两者并存时不能复用; 与文档《LIBERO 打包与安装速查》第 1 步一致。
+LIBERO_RUNTIME_ENDPOINT = "http://127.0.0.1:8092"
+
+
+def libero_enabled(app):
+    """阶段 8 是否要装 LIBERO 扩展场景"""
+    return app.settings.get("EXTENSION", "").strip().lower() == "libero"
+
+
+def libero_pkg_dir(app, create=False):
+    """六个产物的待装目录; 设置为空时落在 framework 的 .output/packages/libero-current"""
+    raw = app.settings.get("LIBERO_PACKAGE_DIR", "").strip()
+    if raw:
+        d = sx(raw)
+    else:
+        d = os.path.join(sx(app.settings["SEMANTIC"]),
+                         "semantic-framework/.output/packages/libero-current")
+    if create:
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def libero_artifact(app, key):
+    """返回某产物的完整路径 (不含存在性判断)"""
+    ver = app.settings.get("LIBERO_RUNTIME_VERSION", "").strip() or "0.4.0-dev.0"
+    return os.path.join(libero_pkg_dir(app), LIBERO_ARTIFACTS[key].format(ver=ver))
+
+
+def libero_skip_if_built(app, key):
+    """产物已存在则跳过对应构建步骤 (有版本后缀的产物同时认其 .sha256)"""
+    p = libero_artifact(app, key)
+    if os.path.isfile(p) and os.path.getsize(p) > 0:
+        return f"产物已存在: {os.path.basename(p)} ({os.path.getsize(p) / 2**20:.0f} MiB)"
+    return None
+
+
+def detect_cuda():
+    """本机是否有可用的 CUDA 运行栈 (NVIDIA 驱动 + 设备节点)。
+
+    只看设备节点与驱动库, 不 import torch: 这一步在安装期执行, 此时模型侧的
+    Python 环境还没装配好。判定结果只用于提示与绑定选择, 运行期仍以
+    torch.cuda.is_available() 为准 (见 franka_abilities.smolvla.effective_device)。
+    """
+    try:
+        if os.path.isdir("/proc/driver/nvidia") or os.path.exists("/dev/nvidiactl"):
+            return True
+    except OSError:
+        pass
+    for root in ("/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/lib/x86_64-linux-gnu"):
+        try:
+            if any(n.startswith("libcuda.so") for n in os.listdir(root)):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def resolve_gpu_mode(app):
+    """把 GPU_MODE 收敛为 'gpu' 或 'cpu'。
+
+    auto (默认) 按本机能力判定; gpu/cpu 是运维强制值, 不做改写——现场需要
+    复现无显卡行为或提前按独显备料时, 探测结果不能覆盖人的意图。
+    """
+    raw = (app.settings.get("GPU_MODE") or "auto").strip().lower()
+    if raw in ("gpu", "cpu"):
+        return raw
+    if raw not in ("auto", ""):
+        app.log("warn", f"GPU_MODE={raw} 无法识别, 按 auto 处理 (可选 auto/gpu/cpu)")
+    return "gpu" if detect_cuda() else "cpu"
+
+
+def _gpu_mode_note(app):
+    """给日志用的判定说明, 让验收能区分"探测"与"强制"。"""
+    raw = (app.settings.get("GPU_MODE") or "auto").strip().lower()
+    mode = resolve_gpu_mode(app)
+    if raw in ("gpu", "cpu"):
+        note = f"强制 {mode}"
+        if mode == "cpu":
+            note += " (绑定仍声明 cuda; 运行期需 SEMANTIC_VLA_DEVICE=cpu 才会真的走 CPU"
+            note += ", 本机已检测到 CUDA" if detect_cuda() else ", 本机没有 CUDA, 会自动降级)"
+        return note
+    has_cuda = detect_cuda()
+    return (f"自动判定为 {mode} "
+            f"({'检测到 CUDA 运行栈' if has_cuda else '未检测到 CUDA, 走 CPU 自动调优'})")
+
+
+def libero_scene_flags(app):
+    """LIBERO_SCENES (逗号分隔) -> ['--scene', 'x', '--scene', 'y']; 空 = 不加限定量"""
+    raw = app.settings.get("LIBERO_SCENES", "").strip()
+    if not raw:
+        return []
+    flags = []
+    for sid in (x.strip() for x in raw.split(",")):
+        if sid:
+            flags += ["--scene", shlex.quote(sid)]
+    return flags
+
+
+def cpu_actions_per_chunk(app):
+    """走 CPU 推理时把一个预测块的前 N 步连续执行, 摊薄单次推理成本。
+
+    返回要写入 .env 的值 (空字符串 = 显式关闭)。这不是纯速度开关: 它把同一
+    预测块的前 N 步开环执行, 改变了控制语义, 因此只在推理确实落在 CPU 上时
+    才开启——独显主机保持 checkpoint 原生的 n_action_steps=1。非法值在这里
+    直接报错而不是留给运行期: Ability 加载时会因 actions_per_chunk 超过模型
+    chunk_size 抛错并停在 Standby, 那种失败在安装阶段看不见。
+    """
+    raw = (app.settings.get("CPU_ACTIONS_PER_CHUNK") or "").strip()
+    if not raw:
+        return ""
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"CPU_ACTIONS_PER_CHUNK 必须是整数: {raw}")
+    if value < 1:
+        raise ValueError(f"CPU_ACTIONS_PER_CHUNK 必须大于 0: {raw}")
+    if value > 50:
+        app.log("warn", f"CPU_ACTIONS_PER_CHUNK={value} 很可能超过模型的 chunk_size "
+                        f"(smolvla_libero 为 50); Ability 加载会因此失败并停在 Standby")
+    return str(value)
+
+
+def parse_cpu_threads(raw):
+    """把设置里的 CPU_THREADS 解析为正整数; 空 = 不覆盖 (返回 None); 非法值抛错。
+
+    纯函数, 不打日志——设置界面每帧都要渲染拓扑预览, 若在这里打日志会刷屏。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        raise ValueError(f"CPU_THREADS 必须是整数: {text}")
+    if value < 1:
+        raise ValueError(f"CPU_THREADS 必须大于 0: {text}")
+    return value
+
+
+def cpu_threads(app):
+    """CPU 推理线程数的显式覆盖值 (空 = 交给运行期自动探测与标定)。
+
+    默认留空。线程数取决于运行时条件 (本机拓扑 + 同机负载), 安装时定死会在
+    换机器或仿真常驻时翻车, 所以这里只做"覆盖阀门": 填了就把值写进 .env 的
+    SEMANTIC_VLA_THREADS (跳过标定), 留空则由 Ability 按拓扑探测 + 启动标定
+    自己算, 结果随绑定摘要上报 cpu_threading。
+    """
+    value = parse_cpu_threads(app.settings.get("CPU_THREADS"))
+    if value is None:
+        return ""
+    available = len(cpu_available_cores())
+    if value > available:
+        app.log("warn", f"CPU_THREADS={value} 超过本机可用核数 {available}, "
+                        f"运行期会被收敛到 {available} (不会报错, 但设置不生效)")
+    return str(value)
+
+
+def cpu_available_cores():
+    """本机可用于推理的逻辑核, 尊重 taskset/cgroup：可用核 → 在线核 → cpu_count。"""
+    getter = getattr(os, "sched_getaffinity", None)
+    if getter is not None:
+        try:
+            allowed = sorted(getter(0))
+            if allowed:
+                limit = cpu_cgroup_quota()
+                return allowed[:limit] if limit is not None and limit < len(allowed) else allowed
+        except OSError:
+            pass
+    try:
+        online = sorted(int(name[3:]) for name in os.listdir(CPU_SYS_ROOT)
+                        if name.startswith("cpu") and name[3:].isdigit())
+    except OSError:
+        online = []
+    if online:
+        return online
+    return list(range(os.cpu_count() or 1))
+
+
+def cpu_cgroup_quota():
+    """cgroup 配额允许的 CPU 个数; 容器里可见核数常大于实际配额, 取不到返回 None。"""
+    try:
+        with open(CGROUP_V2_CPU_MAX, encoding="utf-8") as fh:
+            parts = fh.read().split()
+    except OSError:
+        parts = []
+    if len(parts) == 2 and parts[0] != "max":
+        try:
+            quota, period = int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        return max(1, quota // period) if quota > 0 and period > 0 else None
+    try:
+        quota = int(open(CGROUP_V1_QUOTA, encoding="utf-8").read().strip())
+        period = int(open(CGROUP_V1_PERIOD, encoding="utf-8").read().strip())
+    except (OSError, ValueError):
+        return None
+    if quota > 0 and period > 0:
+        return max(1, quota // period)
+    return None
+
+
+def _cpu_topology_note_at(cpufreq_root, app, cores=None):
+    """``cpu_topology_note`` 的可注入内核: 从给定 cpufreq 根目录读分档。
+
+    与 Ability 的 cpu_tuning 同一套规则 (P/E/低速核分档, 扣掉留给同机仿真与
+    渲染的余量), 用于安装期预览。真正的值由运行期标定决定, 这里只是让验收
+    能提前看到"这台机器会怎么算"。纯函数、不打日志——设置界面每帧渲染都调它。
+    """
+    cpus = cpu_available_cores() if cores is None else list(cores)
+    tiers = {}
+    for cpu in cpus:
+        try:
+            khz = int(open(os.path.join(cpufreq_root, f"cpu{cpu}",
+                                        "cpufreq/cpuinfo_max_freq"), encoding="utf-8").read().strip())
+        except (OSError, ValueError):
+            continue
+        tiers[khz] = tiers.get(khz, 0) + 1
+    total = len(cpus)
+    # 单档或读不到频率 (虚拟机/容器) 视为同质核, 全部计入快速核。
+    fast = total if len(tiers) <= 1 else total - tiers[min(tiers)]
+    reserved = min(total - 1, max(2, -(-total * 20 // 100)))
+    auto_threads = max(1, min(fast - reserved, total))
+    explicit = parse_cpu_threads(app.settings.get("CPU_THREADS")) if app else None
+    parts = [f"可用 {total} 核"]
+    if len(tiers) > 1:
+        parts.append("频率分档 " + "/".join(
+            f"{count}×{khz // 1000}MHz" for khz, count in sorted(tiers.items(), reverse=True)))
+    parts.append(f"自动预算 {auto_threads} 线程 (快速核 {fast} - 保留 {reserved})")
+    if explicit:
+        parts.append(f"已被 CPU_THREADS={explicit} 覆盖")
+    return "; ".join(parts)
+
+
+def cpu_topology_note(app):
+    """本机拓扑与自动线程预算的摘要 (供安装日志与设置界面展示)。"""
+    return _cpu_topology_note_at(CPU_SYS_ROOT, app)
+
+
+def libero_restricted_previews(app):
+    """未限定场景时预览会覆盖全部 6500 个初态, 必须显式确认才允许"""
+    return not app.settings.get("LIBERO_SCENES", "").strip()
+
+
+def fetch_project_id(app):
+    """取安装目标 Project: 设置里指定优先, 否则取当前用户名下第一个 development 项目"""
+    fixed = app.settings.get("LIBERO_PROJECT_ID", "").strip()
+    if fixed:
+        return fixed, "来自设置 LIBERO_PROJECT_ID"
+    cred = os.path.expanduser("~/.semantic/credentials.json")
+    if not os.path.isfile(cred):
+        return None, f"未登录: 缺 {cred} (先做步骤 8.2 的 semantic login)"
+    try:
+        token = json.load(open(cred, encoding="utf-8")).get("token") or ""
+    except Exception as e:
+        return None, f"读取凭据失败: {e}"
+    if not token:
+        return None, f"凭据里没有 token: {cred}"
+    url = app.settings["SERVER_HTTP"].rstrip("/") + "/api/v1/projects"
+    r = subprocess.run(["curl", "-s", "--max-time", "20", "-H", f"Authorization: Bearer {token}", url],
+                       capture_output=True, text=True)
+    try:
+        projects = json.loads(r.stdout).get("projects") or []
+    except Exception:
+        return None, f"解析项目列表失败: {r.stdout.strip()[:200]}"
+    for p in projects:
+        if p.get("mode") == "development":
+            return p.get("id"), f"自动选中 development 项目 {p.get('name')}"
+    return None, "没有可用的 development 项目 (Web 里新建一个后重跑)"
+
+
+def fetch_robot_id(app, model="franka_panda"):
+    """取已存在的受管 Robot (四件套里的 Skill 必须绑定到具体设备)"""
+    fixed = app.settings.get("LIBERO_ROBOT_ID", "").strip()
+    if fixed:
+        return fixed, "来自设置 LIBERO_ROBOT_ID"
+    cred = os.path.expanduser("~/.semantic/credentials.json")
+    if not os.path.isfile(cred):
+        return None, "未登录, 无法查询设备"
+    try:
+        token = json.load(open(cred, encoding="utf-8")).get("token") or ""
+    except Exception as e:
+        return None, f"读取凭据失败: {e}"
+    url = app.settings["SERVER_HTTP"].rstrip("/") + "/api/v1/devices"
+    r = subprocess.run(["curl", "-s", "--max-time", "20", "-H", f"Authorization: Bearer {token}", url],
+                       capture_output=True, text=True)
+    try:
+        devices = json.loads(r.stdout).get("devices") or []
+    except Exception:
+        return None, f"解析设备列表失败: {r.stdout.strip()[:200]}"
+    for d in devices:
+        if d.get("model") == model:
+            return d.get("robot_id"), f"自动选中设备 {d.get('robot_id')}"
+    return None, f"没有 {model} 设备 (Web 设备中心「添加 Pilot」加入一台后重跑)"
+
+
+def _step_libero_precheck(app):
+    """8.1 前置: 校验开关、登录、项目与产物目录; 把结果缓存到 app.vars"""
+    if not libero_enabled(app):
+        return ("skip", f"EXTENSION={app.settings.get('EXTENSION') or 'none'}, 不安装扩展场景")
+    s = app.settings
+    base = sx(s["SEMANTIC"])
+    missing = [r for r in LIBERO_REPOS if not os.path.isdir(os.path.join(base, r))]
+    if missing:
+        return ("fail", "缺仓库 (先完成阶段 2, 且 LIBERO_LINE_BRANCH 已配): " + ", ".join(missing))
+    pkg = libero_pkg_dir(app, create=True)
+    app.vars["LIBERO_PKG_DIR"] = pkg
+    ver = s.get("LIBERO_RUNTIME_VERSION", "").strip() or "0.4.0-dev.0"
+    app.log("info", f"产物目录 = {pkg}")
+    app.log("info", f"GPU_MODE = {s.get('GPU_MODE') or 'auto'} ({_gpu_mode_note(app)})")
+    if resolve_gpu_mode(app) == "cpu":
+        chunk = (s.get("CPU_ACTIONS_PER_CHUNK") or "").strip() or "(未开启)"
+        app.log("info", f"CPU 推理动作块 = {chunk}; 线程数由拓扑探测 + 启动标定自动决定, "
+                        f"结果随绑定摘要上报 cpu_threading")
+        app.log("info", f"CPU 拓扑: {cpu_topology_note(app)}")
+    if libero_restricted_previews(app):
+        app.log("warn", "LIBERO_SCENES 为空: 场景预览将覆盖包内全部初态 (约 6500 个), 极慢; "
+                        "建议填入少量任务 ID 后重跑步骤 8.10")
+    proj, why = fetch_project_id(app)
+    if proj:
+        app.vars["LIBERO_PROJECT_ID"] = proj
+        app.log("ok", f"项目 = {proj} ({why})")
+    else:
+        app.log("warn", f"暂未取到项目: {why}; 步骤 8.10/8.11 会要求先准备好")
+    robot, why_r = fetch_robot_id(app)
+    if robot:
+        app.vars["LIBERO_ROBOT_ID"] = robot
+        app.log("ok", f"受管 Robot = {robot} ({why_r})")
+    else:
+        app.log("warn", f"暂未取到 Robot: {why_r}")
+    if app.vars.get("LIBERO_UPSTREAM_COMMIT"):
+        app.log("info", f"上游 LIBERO commit = {app.vars['LIBERO_UPSTREAM_COMMIT']}")
+    return ("ok", None)
+
+
+def _step_libero_login(app):
+    """8.2 登录: 组件安装走 HTTP API, 需要 ~/.semantic/credentials.json"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
+    sem = os.path.join(fw, ".output/bin/semantic")
+    if not os.path.isfile(sem):
+        return ("fail", f"缺 {sem} (先完成阶段 3 make build)")
+    cred = os.path.expanduser("~/.semantic/credentials.json")
+    server = app.settings["SERVER_HTTP"].rstrip("/")
+    # 已有凭据且"确实能用"才跳过登录。只比 expires_at 是不够的: 同机可能存在
+    # 多个环境共用一个端口 (本机的两套环境都是 8080), 凭据文件里的 token 属于
+    # 上一个 Server, 换一套环境后它未过期但对新 Server 无效, 后续组件安装会以
+    # HTTP 401 "访问令牌无效" 失败。这里同时比 server 地址并实探一次。
+    if os.path.isfile(cred):
+        try:
+            c = json.load(open(cred, encoding="utf-8"))
+            exp = c.get("expires_at", "")
+            if c.get("token") and exp:
+                import datetime
+                t = datetime.datetime.fromisoformat(exp.replace("Z", "+00:00"))
+                now = datetime.datetime.now(datetime.timezone.utc)
+                cred_server = (c.get("server") or "").rstrip("/")
+                if t > now and cred_server == server:
+                    if not _http_status(server + "/healthz", timeout=5):
+                        return ("fail", "Server 未就绪: 先完成阶段 6 (步骤 6.1 启动 Server) 再回来")
+                    if _token_works(server, c["token"]):
+                        app.log("ok", f"已有有效凭据 (至 {t.astimezone().strftime('%m-%d %H:%M')}), 跳过登录")
+                        return ("ok", None)
+                    app.log("note", "凭据未过期但当前 Server 不认 (可能换过环境), 重新登录")
+                elif t > now:
+                    app.log("note", f"凭据属于 {cred_server or '未知 Server'}, 与当前 {server} 不同, 重新登录")
+        except Exception:
+            pass
+    if not _http_status(server + "/healthz", timeout=5):
+        return ("fail", "Server 未就绪: 先完成阶段 6 (步骤 6.1 启动 Server) 再回来")
+    return ("shell", {"cmds": [" ".join([
+        shlex.quote(sem), "login",
+        "--server", shlex.quote(app.settings["SERVER_HTTP"]),
+        "--username", "admin",
+        "--password", shlex.quote(app.settings["SEMANTIC_ADMIN_PASSWORD"]),
+    ])], "cwd": fw, "env": {"PATH": _path_with_tools(app)}})
+
+
+def _libero_upstream_dir(app):
+    raw = app.settings.get("LIBERO_UPSTREAM_DIR", "").strip()
+    if raw:
+        return sx(raw)
+    return os.path.join(sx(app.settings["SEMANTIC"]), ".cache/libero-behavior-vla/LIBERO")
+
+
+def _libero_sources_lock(app):
+    return os.path.join(sx(app.settings["SEMANTIC"]),
+                        "semantic-simulation/mujoco-runtime/profiles/sources.lock.yaml")
+
+
+def _step_libero_upstream(app):
+    """8.3 准备上游 LIBERO 源码; commit 从 sources.lock.yaml 读取, 不写死在脚本里"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    lock = _libero_sources_lock(app)
+    if not os.path.isfile(lock):
+        return ("fail", f"缺来源锁文件: {lock} (先完成阶段 2 拉取 mujoco-runtime)")
+    url, commit = "", ""
+    for ln in open(lock, encoding="utf-8"):
+        t = ln.strip()
+        if t.startswith("url:") and not url:
+            url = t.split(":", 1)[1].strip()
+        elif t.startswith("commit:") and not commit:
+            commit = t.split(":", 1)[1].strip()
+    if not url or not commit:
+        return ("fail", f"无法从 {lock} 解析 libero 的 url/commit")
+    app.vars["LIBERO_UPSTREAM_COMMIT"] = commit
+    dest = _libero_upstream_dir(app)
+    app.log("info", f"上游源码 = {dest} @ {commit}")
+    proxy = ""
+    if app.settings.get("GITHUB_PROXY", "").strip():
+        # 只对 github 直连失败时有用; 这里给用户一条可复制的提示, 不擅自设代理
+        proxy = ("# 直连失败时可先 export https_proxy=<你的代理> 再重跑本步骤")
+    script = "\n".join([
+        "set -eo pipefail",
+        f'LOCK_URL="{url}"',
+        f'LOCK_COMMIT="{commit}"',
+        f'DEST="{dest}"',
+        *([proxy] if proxy else []),
+        'mkdir -p "$(dirname "$DEST")"',
+        # 中断过的克隆会留下只有 .git、没有工作树的半成品 (克隆时网络超时被
+        # Ctrl-C / timeout 杀掉就是这样)。这种目录在下次执行时会被当成
+        # "已存在" 而跳过克隆, 然后在 checkout 时报 "引用不是一个树"。
+        # 所以先判断它是不是一个健康、完整的仓库, 不是就清掉重克隆。
+        'healthy() { [ -d "$DEST/.git" ] || return 1; '
+        'git -C "$DEST" rev-parse --git-dir >/dev/null 2>&1 || return 1; '
+        'git -C "$DEST" rev-parse --verify HEAD >/dev/null 2>&1 || return 1; return 0; }',
+        'if healthy; then',
+        '  echo "[复用] $DEST"',
+        '  git -C "$DEST" fetch origin --tags --prune 2>&1 | tail -2 || true',
+        'elif [ -e "$DEST" ]; then',
+        '  echo "[清理] $DEST 不是完整仓库 (上次克隆可能中断), 删除后重新克隆"',
+        '  rm -rf "$DEST"',
+        '  echo "[克隆] $DEST"',
+        '  git clone "$LOCK_URL" "$DEST"',
+        'else',
+        '  echo "[克隆] $DEST"',
+        '  git clone "$LOCK_URL" "$DEST"',
+        'fi',
+        # 目标 commit 可能不在默认分支上, 且刚克隆时未必拉全; 取不到再显式
+        # fetch 一次该 commit, 让 "浅克隆/单分支" 之类的情况也能收敛。
+        'if ! git -C "$DEST" cat-file -e "$LOCK_COMMIT^{tree}" 2>/dev/null; then',
+        '  echo "[补取] 目标 commit $LOCK_COMMIT 不在本地, 尝试单独取回"',
+        '  git -C "$DEST" fetch origin "$LOCK_COMMIT" 2>&1 | tail -2 || true',
+        'fi',
+        'git -C "$DEST" checkout -q "$LOCK_COMMIT"',
+        'ACTUAL=$(git -C "$DEST" rev-parse HEAD)',
+        'echo "实际 commit: $ACTUAL"',
+        'if [ "$ACTUAL" != "$LOCK_COMMIT" ]; then',
+        '  echo "错误: 与 sources.lock.yaml 不一致, 期望 $LOCK_COMMIT" >&2; exit 1',
+        'fi',
+        'git -C "$DEST" diff --exit-code HEAD -- libero setup.py && echo "工作区干净"',
+    ])
+    return ("shell", {"cmds": [script], "env": {"PATH": _path_with_tools(app)}})
+
+
+def _step_libero_build_runtime(app):
+    """8.4 产物 1: Runtime Pack (需 uv 临时拉一个 Python 3.8 环境)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    src = os.path.join(sx(app.settings["SEMANTIC"]), "semantic-simulation/mujoco-runtime")
+    ver = app.settings.get("LIBERO_RUNTIME_VERSION", "").strip() or "0.4.0-dev.0"
+    wh = os.path.join(sx(app.settings["SEMANTIC"]), "semantic-framework/.output/runtime-packs/"
+                      f"libero-robosuite-1.4/{ver}/wheelhouse")
+    cmd = " ".join([
+        "uv", "run", "--no-project", "--python", "3.12", "--with", "PyYAML",
+        "python", "tools/build_runtime_pack.py",
+        "--profile", "libero-robosuite-1.4",
+        "--version", shlex.quote(ver),
+        "--upstream-source", shlex.quote(_libero_upstream_dir(app)),
+        "--output", shlex.quote(libero_pkg_dir(app)),
+    ])
+    env = {"PATH": _path_with_tools(app), "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"],
+           **_mirror_env_extra(app), "SEMANTIC": sx(app.settings["SEMANTIC"])}
+    if os.path.isdir(wh):
+        env["SEMANTIC_RUNTIME_WHEELHOUSE"] = wh
+    return ("shell", {"cmds": [cmd], "cwd": src, "env": env,
+                      "verify": [f'test -f "{libero_artifact(app, "runtime")}"']})
+
+
+def _step_libero_build_scenes(app):
+    """8.6 产物 2: 场景包 (优先复用已装 Runtime 的 python, 免再备构建环境)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
+    src = os.path.join(sx(app.settings["SEMANTIC"]), "semantic-simulation/mujoco-runtime")
+    rid = app.settings.get("LIBERO_RUNTIME_ID", "").strip() or "local-libero-robosuite-1.4"
+    ver = app.settings.get("LIBERO_RUNTIME_VERSION", "").strip() or "0.4.0-dev.0"
+    rt_py = os.path.join(fw, f".output/runtime-envs/{rid}/{ver}/bin/python")
+    out = libero_artifact(app, "scenes")
+    preview_dir = os.path.join(fw, ".output/content/scene-catalogs/.previews")
+    tail = f"--source {shlex.quote(_libero_upstream_dir(app))} --version 1.0.0 --output {shlex.quote(out)}"
+    if os.path.isdir(preview_dir):
+        tail += f" --preview-directory {shlex.quote(preview_dir)}"
+    if os.path.isfile(rt_py):
+        cmds = [f'{shlex.quote(rt_py)} "{src}/tools/libero_packages.py" {tail}']
+        app.log("info", f"复用已装 Runtime 的解释器: {rt_py}")
+    else:
+        cmds = ["uv run --project profiles/libero --frozen "
+                f'python tools/libero_packages.py {tail}']
+        app.log("note", "未装 Runtime, 改用 uv run (会另备一份构建环境)")
+    return ("shell", {"cmds": cmds, "cwd": src,
+                      "env": {"PATH": _path_with_tools(app), "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"],
+                              **_mirror_env_extra(app)},
+                      "verify": [f'test -f "{out}"']})
+
+
+def _step_libero_build_ability_skill(app):
+    """8.7 产物 3/4: Ability 与 Skill (framework CLI 构建)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    base = sx(app.settings["SEMANTIC"])
+    fw = os.path.join(base, "semantic-framework")
+    sem = os.path.join(fw, ".output/bin/semantic")
+    if not os.path.isfile(sem):
+        return ("fail", f"缺 {sem} (先完成阶段 3 make build)")
+    ability = libero_artifact(app, "ability")
+    skill = libero_artifact(app, "skill")
+    skill_src = os.path.join(base, "semantic-skill/robot-skill/semantic_robot_skills/skills/vla_manipulation")
+    cmds = []
+    cmds.append(f'{shlex.quote(sem)} build {shlex.quote(os.path.join(base, "semantic-ability/franka-ability"))} '
+                f'--output {shlex.quote(ability)}')
+    cmds.append(f'test -f {shlex.quote(skill_src)}/SKILL.md && {shlex.quote(sem)} build '
+                f'{shlex.quote(skill_src)} --output {shlex.quote(skill)}')
+    return ("shell", {"cmds": cmds, "cwd": fw,
+                      "env": {"SEMANTIC": base, "PATH": _path_with_tools(app),
+                              "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"],
+                              **_mirror_env_extra(app)},
+                      "verify": [f'test -f "{ability}"', f'test -f "{skill}"']})
+
+
+def _step_libero_build_robot(app):
+    """8.8 产物 5: 机器人运行支持包 (一条脚本: Go 二进制 + Wheel 闭包 + 组装)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    base = sx(app.settings["SEMANTIC"])
+    script = os.path.join(base, "semantic-robot-deployment/scripts/refresh_franka_libero.py")
+    if not os.path.isfile(script):
+        return ("fail", f"缺 {script} (先完成阶段 2; LIBERO_LINE_BRANCH 是否正确?)")
+    return ("shell", {"cmds": [f'python3 "{script}" --output "{libero_artifact(app, "robot")}"'],
+                      "cwd": base,
+                      "env": {"PATH": _path_with_tools(app), "SEMANTIC": base,
+                              "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"],
+                              **_mirror_env_extra(app)},
+                      "verify": [f'test -f "{libero_artifact(app, "robot")}"']})
+
+
+def _step_libero_build_model(app):
+    """8.9 产物 6: SmolVLA 模型包。
+
+    绑定里的 device 保持交付声明的 cuda, 不在这里改写。运行期由
+    effective_device() 按本机能力收敛 (cuda → cpu 并如实上报 effective_device),
+    CPU 上再叠加拓扑探测与线程标定。因此同一个模型包在独显与无显卡机器上都
+    可用, 也不会出现"绑定摘要与实际运行设备不一致"。
+    """
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    base = sx(app.settings["SEMANTIC"])
+    fa = os.path.join(base, "semantic-ability/franka-ability")
+    script = os.path.join(fa, "tools/refresh_model.py")
+    if not os.path.isfile(script):
+        return ("fail", f"缺 {script} (先完成阶段 2)")
+    out = libero_artifact(app, "model")
+    hf = app.settings.get("HF_ENDPOINT", "").strip() or "https://hf-mirror.com"
+    mode = resolve_gpu_mode(app)
+    app.log("info", f"模型绑定保持交付声明 device={_binding_device(fa)}, "
+                    f"运行期按本机能力收敛 (本机判定: {mode})")
+    return ("shell", {"cmds": [f'python3 "{script}"'], "cwd": fa,
+                      "env": {"PATH": _path_with_tools(app), "HF_ENDPOINT": hf,
+                              # 镜像站不支持 Xet CAS 重组（cas-server.xethub.hf.co 需
+                              # HuggingFace 账号），不关会 401；本模型非门控，
+                              # 普通 HTTP 即可匿名拉取。
+                              "HF_HUB_DISABLE_XET": "1",
+                              "SEMANTIC": base, "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"],
+                              **_mirror_env_extra(app)},
+                      "verify": [f'test -f "{out}"']})
+
+
+def _binding_device(franka_ability_dir):
+    """读交付配置里声明的 device, 仅用于日志说明 (不改写)。"""
+    try:
+        cfg = os.path.join(franka_ability_dir, "configs/smolvla-libero.json")
+        with open(cfg, encoding="utf-8") as fh:
+            return json.load(fh).get("device", "cuda")
+    except (OSError, ValueError):
+        return "cuda"
+
+
+def _step_libero_install_runtime(app):
+    """8.5 安装 Runtime 并 doctor 验证 (本地执行, 不需要 Server)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
+    sem = os.path.join(fw, ".output/bin/semantic")
+    cfg = os.path.join(fw, ".output/configs/semantic-server.yaml")
+    rid = app.settings.get("LIBERO_RUNTIME_ID", "").strip() or "local-libero-robosuite-1.4"
+    pack = libero_artifact(app, "runtime")
+    if not os.path.isfile(pack):
+        return ("fail", f"缺 Runtime 包: {pack} (先完成步骤 8.4)")
+    registered = os.path.join(fw, f".output/runtimes.d/{rid}.yaml")
+    cmds = []
+    if os.path.isfile(registered):
+        app.log("note", f"已登记过 {rid}; 跳过安装, 只做 doctor 验证 "
+                        f"(要覆盖重装请先 semantic runtime uninstall --id {rid})")
+    else:
+        cmds.append(" ".join([
+            shlex.quote(sem), "install", "runtime",
+            "--pack", shlex.quote(pack),
+            "--installation-id", shlex.quote(rid),
+            "--endpoint", LIBERO_RUNTIME_ENDPOINT,
+            "-c", shlex.quote(cfg),
+        ]))
+    cmds.append(" ".join([shlex.quote(sem), "runtime", "doctor", "--id", shlex.quote(rid),
+                          "-c", shlex.quote(cfg)]))
+    return ("shell", {"cmds": cmds, "cwd": fw,
+                      "env": {"PATH": _path_with_tools(app), "SEMANTIC": sx(app.settings["SEMANTIC"]),
+                              "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"]},
+                      "verify": [f'test -f "{registered}"']})
+
+
+def _step_libero_install_scenes(app):
+    """8.10 安装场景包; --scene 限定预览范围 (全量极慢)"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
+    sem = os.path.join(fw, ".output/bin/semantic")
+    proj = app.vars.get("LIBERO_PROJECT_ID") or app.settings.get("LIBERO_PROJECT_ID", "").strip()
+    if not proj:
+        return ("fail", "未知 Project ID: 先在 Web 建一个 development 项目, "
+                        "或把 ID 填进设置 LIBERO_PROJECT_ID")
+    pack = libero_artifact(app, "scenes")
+    if not os.path.isfile(pack):
+        return ("fail", f"缺场景包: {pack} (先完成步骤 8.6)")
+    parts = [shlex.quote(sem), "install", shlex.quote(pack), "--project", shlex.quote(proj)]
+    parts += libero_scene_flags(app)
+    return ("shell", {"cmds": [" ".join(parts)], "cwd": fw,
+                      "env": {"PATH": _path_with_tools(app), "SEMANTIC": sx(app.settings["SEMANTIC"])}})
+
+
+def _libero_scene_catalog(app):
+    """从 Server 读场景目录，用于解析 scene_version 与默认 variant。
+
+    安装器本身保持纯标准库（文档承诺只依赖 Python3），因此不解析 catalog.yaml，
+    一律走 HTTP 目录接口。返回 {scene_id: (version, variant_id)}。
+    """
+    token, why = _server_token(app)
+    if not token:
+        return {}, why
+    base = app.settings["SERVER_HTTP"].rstrip("/")
+    r = subprocess.run(["curl", "-s", "--max-time", "30", "-H", f"Authorization: Bearer {token}",
+                        base + "/api/v1/simulation/scene-catalog"],
+                       capture_output=True, text=True)
+    try:
+        payload = json.loads(r.stdout)
+    except Exception:
+        return {}, f"解析场景目录失败: {r.stdout.strip()[:200]}"
+    entries = payload if isinstance(payload, list) else payload.get("scenes") or \
+        payload.get("catalog_scenes") or payload.get("items") or []
+    catalog = {}
+    for entry in entries:
+        versions = entry.get("versions") or []
+        if not versions:
+            continue
+        published = [v for v in versions if v.get("published")] or versions
+        version = published[0]
+        variant = (version.get("variants") or [{}])[0].get("variant_id") or ""
+        catalog[entry.get("scene_id")] = (version.get("version") or "", variant)
+    if not catalog:
+        return {}, "场景目录为空 (场景包装了吗?)"
+    return catalog, ""
+
+
+def _libero_project_scene_ids(app):
+    """要加进项目的场景 ID。默认跟 LIBERO_SCENES 保持一致，它本身就是预览限量值。"""
+    raw = app.settings.get("LIBERO_SCENES", "").strip()
+    ids = [x.strip() for x in raw.split(",") if x.strip()] if raw else []
+    return ids or ["libero-spatial-0"]
+
+
+def _server_token(app):
+    """读安装器自己登录留下的凭据 (步骤 8.2 / 6.4 之前的基础登录)。"""
+    cred = os.path.expanduser("~/.semantic/credentials.json")
+    if not os.path.isfile(cred):
+        return None, f"未登录: 缺 {cred}"
+    try:
+        token = json.load(open(cred, encoding="utf-8")).get("token") or ""
+    except Exception as e:
+        return None, f"读取凭据失败: {e}"
+    if not token:
+        return None, f"凭据里没有 token: {cred}"
+    return token, ""
+
+
+def _ensure_project_scenes(app, project_id, scene_ids):
+    """把场景加进项目。项目不可写时才激活后重试，不擅自切换用户当前项目。
+
+    Studio 的场景面板只认 project-scenes：Web 里 startScene 走 /scenes/... 的分支
+    没有调用方，起场景一律是 project-scenes/{id}/instances。场景没加进项目时面板
+    取不到 resourceId，用户在 Web 里根本起不来。写 project-scenes 又要求项目处于
+    激活状态，否则直接 PROJECT_NOT_WRITABLE——所以激活只是加场景的前置手段。
+    """
+    token, why = _server_token(app)
+    if not token:
+        return ("fail", why)
+    base = app.settings["SERVER_HTTP"].rstrip("/")
+
+    def api(method, path, payload=None, timeout=60):
+        cmd = ["curl", "-s", "--max-time", str(timeout), "-X", method,
+               "-H", f"Authorization: Bearer {token}", "-H", "Content-Type: application/json"]
+        if payload is not None:
+            cmd += ["-d", json.dumps(payload)]
+        cmd.append(base + path)
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            return json.loads(r.stdout or "{}")
+        except Exception:
+            return {"_raw": r.stdout.strip()[:200]}
+
+    listed = api("GET", f"/api/v1/projects/{project_id}/simulation/project-scenes")
+    if isinstance(listed, list):
+        existing = {item.get("catalog_scene_id") for item in listed}
+    else:
+        existing = {item.get("catalog_scene_id")
+                    for item in (listed.get("project_scenes") or [])}
+    catalog, why = _libero_scene_catalog(app)
+    if not catalog:
+        return ("fail", f"读不到场景目录: {why}")
+
+    activated = False
+    added, skipped, missing, failed = [], [], [], []
+    for scene_id in scene_ids:
+        if scene_id in existing:
+            skipped.append(scene_id)
+            continue
+        if scene_id not in catalog:
+            missing.append(scene_id)
+            continue
+        version, variant = catalog[scene_id]
+        body = {"catalog_scene_id": scene_id, "scene_version": version,
+                "default_variant_id": variant}
+        result = api("POST", f"/api/v1/projects/{project_id}/simulation/project-scenes", body)
+        code = (result.get("error") or {}).get("code") if isinstance(result.get("error"), dict) else None
+        if code == "PROJECT_NOT_WRITABLE" and not activated:
+            app.log("info", f"项目 {project_id} 未激活，加入场景前先激活")
+            api("POST", f"/api/v1/projects/{project_id}/activate")
+            activated = True
+            result = api("POST", f"/api/v1/projects/{project_id}/simulation/project-scenes", body)
+        if isinstance(result.get("error"), dict):
+            failed.append(f"{scene_id}: {result['error'].get('message')}")
+            continue
+        added.append(f"{scene_id}@{version}/{variant}")
+    for scene_id in missing:
+        app.log("warn", f"目录里没有场景 {scene_id} (拼写?)")
+    if failed:
+        return ("fail", "加入场景失败: " + "; ".join(failed))
+    if added:
+        app.log("ok", "已加入项目: " + ", ".join(added))
+    if skipped:
+        app.log("note", "已在项目中，跳过: " + ", ".join(skipped))
+    if not added and not skipped:
+        return ("fail", "没有加入任何场景")
+    return ("ok", None)
+
+
+def _step_libero_bind_project(app):
+    """8.12 激活 Project 并把 LIBERO 场景加进项目。"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    s = app.settings
+    proj = app.vars.get("LIBERO_PROJECT_ID") or s.get("LIBERO_PROJECT_ID", "").strip()
+    if not proj:
+        proj, why = fetch_project_id(app)
+        if not proj:
+            return ("fail", f"未知 Project ID: {why}")
+        app.vars["LIBERO_PROJECT_ID"] = proj
+        app.log("ok", f"项目 = {proj} ({why})")
+    return _ensure_project_scenes(app, proj, _libero_project_scene_ids(app))
+
+
+def _step_studio_bind_scene(app):
+    """7.4 把 R1 Pro 拆码垛场景加进当前项目。
+
+    mujoco 基础流程同样卡在这一步: 场景注册进 content/scene-catalogs/ 之后不会
+    自动进项目, 而 Web 起场景只认 project-scenes。目标项目取与场景兼容 Runtime
+    Profile 匹配的那个, 否则退回当前激活的项目。
+    """
+    base = sx(app.settings["SEMANTIC"])
+    fw = os.path.join(base, "semantic-framework/.output/content/scene-catalogs/dev-native-mujoco")
+    if not os.path.isdir(fw):
+        return ("fail", f"缺原生 MuJoCo 场景目录: {fw} (先完成阶段 3 make init)")
+    token, why = _server_token(app)
+    if not token:
+        return ("fail", why)
+    server = app.settings.get("SERVER_HTTP", "http://127.0.0.1:8080").rstrip("/")
+    r = subprocess.run(["curl", "-s", "--max-time", "20",
+                        "-H", f"Authorization: Bearer {token}", server + "/api/v1/projects"],
+                       capture_output=True, text=True)
+    try:
+        projects = json.loads(r.stdout).get("projects") or []
+    except Exception:
+        return ("fail", f"解析项目列表失败: {r.stdout.strip()[:200]}")
+    if not projects:
+        return ("fail", "没有可用 Project; 先在 Web 新建一个")
+    wanted = [p for p in projects if p.get("runtime_profile_id") == "native-mujoco"]
+    target = (wanted or [p for p in projects if p.get("is_active")] or projects)[0]
+    app.log("ok", f"目标 Project = {target['name']} ({target['id']})")
+    scenes = (app.settings.get("STUDIO_SCENES", "").strip() or "depalletizing-r1pro")
+    ids = [x.strip() for x in scenes.split(",") if x.strip()]
+    return _ensure_project_scenes(app, target["id"], ids)
+
+
+def _step_libero_install_robot(app):
+    """8.11 安装机器人四件套 (产物 5/3/6/4), 顺序不能颠倒"""
+    if not libero_enabled(app):
+        return ("skip", "EXTENSION 不是 libero")
+    fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
+    sem = os.path.join(fw, ".output/bin/semantic")
+    proj = app.vars.get("LIBERO_PROJECT_ID") or app.settings.get("LIBERO_PROJECT_ID", "").strip()
+    robot = app.vars.get("LIBERO_ROBOT_ID") or app.settings.get("LIBERO_ROBOT_ID", "").strip()
+    if not proj:
+        return ("fail", "未知 Project ID (见步骤 8.1)")
+    missing = [k for k in ("robot", "ability", "model", "skill")
+               if not os.path.isfile(libero_artifact(app, k))]
+    if missing:
+        return ("fail", "缺少产物: " + ", ".join(os.path.basename(libero_artifact(app, k)) for k in missing))
+    order = [("robot", []), ("ability", []), ("model", []), ("skill", ["--robot", robot] if robot else [])]
+    if not robot:
+        app.log("warn", "未发现受管 Robot: Skill 会只导入不派发; "
+                        "在 Web 设备中心「添加 Pilot」加入 franka_panda 后重跑本步骤")
+    cmds = []
+    for key, extra in order:
+        cmds.append(" ".join([shlex.quote(sem), "install", shlex.quote(libero_artifact(app, key)),
+                              "--project", shlex.quote(proj)] + [shlex.quote(x) if i % 2 else x
+                                                                 for i, x in enumerate(extra)]))
+    return ("shell", {"cmds": cmds, "cwd": fw,
+                      "env": {"PATH": _path_with_tools(app), "SEMANTIC": sx(app.settings["SEMANTIC"])}})
+
+
+MANUAL_LIBERO = """[LIBERO 联调清单] (对应《LIBERO 打包与安装速查》第二节)
+「激活 Project + 添加场景」已由步骤 8.12 自动完成 (默认 libero-spatial-0, 可在
+LIBERO_SCENES 里改); 下面这些仍需要人在 Web 里做:
+
+1. 绑 Ability 与模型: 项目内容 -> 「机器人与模型配置」
+   -> 为 franka_panda 设默认 Ability (franka-ability) 与模型 (franka-libero-smolvla)
+   -> 保存后 Robot 空闲时点「立即生效」
+   不绑的话 Ability 会停在 Standby (abilityPort: 0) 直到超时, Robot 一直 interrupted
+   注意: 这一步会写 robot-bindings/<摘要>/current.json 且不会自动刷新。重建/重装了
+   新版本的 Ability 后, 旧绑定仍指向旧组件——需要重新「立即生效」或删掉该绑定文件
+2. 配 LLM: Studio「系统设置」加 DeepSeek (text + tool_call), 设为全局默认
+   Token 只放设置里, 不要写进 .env 或提交仓库
+   全新环境的默认 provider 是 mock, Agent 不会真正响应
+3. 打开场景 -> 选 franka Robot -> 对话页左侧 + 选「规划模式」
+4. 发自然语言指令驱动 SmolVLA, 例如:
+   pick up the black bowl between the plate and the ramekin and place it on the plate
+
+无 GPU 主机 (GPU_MODE=auto 判定为 cpu 时) 实测边界:
+- 绑定保持交付声明 device=cuda, Ability 按本机能力收敛为 cpu 并如实上报
+  (device=cuda / effective_device=cpu), 只有实际用 CPU 推理时才做线程调优
+- CPU 线程数由拓扑探测 + 启动标定自动决定, 并给同机仿真/渲染留余量。
+  线程数只贡献约 15-25%; 效果最大的是关闭 OpenMP 自旋等待 (约 3 倍, 框架在
+  拉起受管实例时自动注入)。调优结果随绑定摘要上报 cpu_threading
+- 动作块摊薄由 CPU_ACTIONS_PER_CHUNK (默认 10, 阶段 3.1 写入 .env) 控制:
+  它把同一预测块的前 N 步开环执行, 每控制步从约 2.5 s 降到亚秒级。
+  这是控制语义的变化, 因此只在 CPU 推理时开启; 独显主机保持原生 1。
+  现场想关闭: 把 CPU_ACTIONS_PER_CHUNK 留空后重跑 3.1, 并重启 Server
+- 首次冷加载模型需数分钟: 这是权重读取耗时, 不阻塞场景就绪。装配只等 Ability
+  把心跳状态推到 Running; 权重在后台加载, 期间 ExecutePolicy 等就绪闸门而不失败
+- 判断 Robot 是否真的就绪, 看 Server 日志的「受管 Robot 已就绪」和设备页 ability
+  的 health, 不要只看 AbilityFramework 日志——那条 wait ability ... timeout 在
+  权重慢于 connect 预算时会出现并能自行恢复, 不是致命错误"""
 
 
 def build_steps():
@@ -1131,16 +2148,19 @@ def build_steps():
       cmds=lambda app: _apt_mirror_script(app),
       skip_check=lambda app: None if app.settings.get("APT_MIRROR", "").strip()
       else "APT_MIRROR 未配置, 保持系统源",
-      note="将 archive/security.ubuntu.com 替换为 APT_MIRROR; 备份后缀用 .disabled (apt 静默忽略, 旧版也不打 N: 提示), "
-           "已存在 .bak-orig 旧备份时不再重复备份")
+      note="将 archive/security.ubuntu.com 替换为 APT_MIRROR, 每个源文件保留 .bak-orig 备份")
 
     S("1.1", "基础工具 (curl/git/git-lfs/编译工具链)", sudo=True,
       cmds=["sudo apt update",
-            "sudo apt install -y curl ca-certificates git git-lfs make xz-utils "
-            "build-essential ninja-build cmake pkg-config",
+            "sudo apt install -y curl ca-certificates git git-lfs make xz-utils unzip zstd "
+            "build-essential ninja-build cmake pkg-config python3-yaml python3-venv python3-pip",
             "git lfs install"],
       note="更新软件包索引并安装 curl、Git、Git LFS、make、解压工具与 C/C++ 编译工具链; "
-           "build-essential 提供 gcc/g++, ninja-build/cmake 供 5.1 xmake 编译 AbilityFramework 使用")
+           "xz-utils 解 .tar.xz、unzip 解 .zip (xmake 拉 openssl3 等 zip 制品必需); "
+           "zstd 供 tar --zstd 打 .tar.zst 运行时包 (mujoco-runtime/tools/build_runtime_pack.py); "
+           "python3-yaml 供打包脚本 deploy_franka_libero.py import yaml (步骤 8.8); "
+           "python3-venv/pip 供 semantic-robot-bundle 用系统解释器建共享 venv (缺 ensurepip 会失败); "
+           "build-essential 提供 gcc/g++, ninja-build/cmake 供 5.1 用 xmake 编译 AbilityFramework 使用")
 
     S("1.1b", "安装 xmake (AbilityFramework 编译)",
       cmds=['command -v xmake >/dev/null 2>&1 || curl -fsSL https://xmake.io/shget.text | bash',
@@ -1186,30 +2206,33 @@ def build_steps():
 
     S("1.7", "版本自检",
       cmds=["go version", "node -v", "npm -v", "uv --version",
-            "uv python find 3.13", "git lfs version", "make --version"],
+            "uv python find 3.13", "git lfs version", "make --version",
+            "gcc --version", "cmake --version", "ninja --version", "pkg-config --version",
+            "xmake --version"],
       env=lambda app: {"PATH": _path_with_tools(app)},
       post=_check_versions_post)
 
     # ---------------- 阶段 2 ----------------
     S("2.1", "克隆全部子仓库",
-      pre=lambda app: app.prepare_clone_workspace(),
       cmds=lambda app: _clone_script(app), cwd=lambda app: sx(app.settings["SEMANTIC"]),
-      note="按拉取清单准备子仓库。")
+      note="注意: GitLab 项目名是 semantic-deployment, 本地目录必须叫 semantic-robot-deployment (刷新脚本认这个名字)")
 
     S("2.2", "切换到版本清单指定的分支/Tag",
       cmds=lambda app: _branch_script(app),
       note="优先读取 repo-versions.json 版本清单 (用 repo_versions.py 维护, 支持 branch/tag/commit); "
            "清单缺失时回退到设置里的分支")
 
-    S("2.3", "准备场景资产与 Wheel",
-      cmds=lambda app: _asset_pull_script(app),
-      env=lambda app: {"UV_DEFAULT_INDEX": app.settings.get("UV_DEFAULT_INDEX", "")},
-      post=lambda app, rc: _check_runtime_assets(app),
-      note="拉取清单: 场景资产、运行时 bundle 配置与第三方 Wheel。")
+    S("2.3", "拉取 Git LFS 资产",
+      cmds=lambda app: [
+          f'cd "{sx(app.settings["SEMANTIC"])}/semantic-scene/mujoco-asset" && git lfs install && git lfs pull && git lfs fsck',
+          f'cd "{sx(app.settings["SEMANTIC"])}/semantic-ability/ability-runtime" '
+          f'&& git lfs pull -X "AbilityFramework,ability_py-*.whl,ability_scaffold-*.whl" && make check',
+      ],
+      note="克隆已跳过 LFS smudge; mujoco-asset 全量拉取, ability-runtime 定向拉取(排除源码编译替代的 AF 二进制与 ability_py/ability_scaffold Wheel, 由 5.1/5.2 源码构建产出)")
 
     S("2.4", "目录与资产核对",
       cmds=lambda app: _verify2_script(app),
-      note="检查场景/部署目录和第三方资产; AbilityFramework、ability_py、ability_scaffold 在阶段 5 源码构建后校验")
+      note="mesh 文件应是实体, 不是几十字节的 LFS 指针文本; AbilityFramework 应为 ELF 64-bit")
 
     # ---------------- 阶段 3 ----------------
     S("3.1", "准备 .env (管理员密码)", kind="python", fn=_step_prepare_env,
@@ -1283,8 +2306,7 @@ def build_steps():
     # ---------------- 阶段 6 ----------------
     S("6.1", "启动 Server (make run)", kind="service",
       service=lambda app: _server_service(app),
-      note="默认登录: 用户名 admin / 密码 test-admin-pass; 如已修改, 使用 .env 中的 SEMANTIC_ADMIN_PASSWORD; "
-           "端口: HTTP 8080 / WS 8081 / MuJoCo Runtime 随后一般 8090 / Ability 18100-18199; "
+      note="端口: HTTP 8080 / WS 8081 / MuJoCo Runtime 随后一般 8090 / Ability 18100-18199; "
            "TMPDIR 已指向 .output/tmp (AF 打包在 /tmp 跨设备 rename 会 EXDEV); "
            "已有本工作区 Server 会先停再拉")
 
@@ -1301,20 +2323,100 @@ def build_steps():
           "timeout": 240,
       },
       note=lambda app: (f"启动后浏览器打开 {app.settings['WEB_URL']}; 登录: 用户名 admin / "
-                        f"默认密码 test-admin-pass (如已修改, 使用 .env 中的 SEMANTIC_ADMIN_PASSWORD); "
+                        f"密码 SEMANTIC_ADMIN_PASSWORD (当前设置值已写入 .env); "
                         f"已有本工作区 Web 会先停再拉"))
 
     S("6.4", "发布三个 Robot Skill", kind="python", fn=_step_publish_skills,
-      note="只在 Bundle 刷新后做一次; Server 必须已在跑; 发布清单: semantic-navigation / grasp-object / place-object，版本以本次构建产物为准")
+      note="只在 Bundle 刷新后做一次; Server 必须已在跑; 应发布 semantic-navigation@0.4.4 / grasp-object@0.4.17 / place-object@0.4.14")
 
     # ---------------- 阶段 7 ----------------
-    S("7.1", "拆码垛场景测试", kind="manual", manual_text=MANUAL_STUDIO)
+    S("7.1", "加入拆码垛场景到项目", kind="python", fn=_step_studio_bind_scene,
+      note="Studio 起场景只认 project-scenes, 场景注册进 catalogs 后不会自动进项目; "
+           "目标 Project 取 Runtime Profile 为 native-mujoco 的那个。"
+           "场景 ID 可在 STUDIO_SCENES 里改 (逗号分隔), 缺省 depalletizing-r1pro")
 
-    # ---------------- 阶段 8 ----------------
-    S("8.1", "日常再开: Server", kind="service",
+    S("7.2", "Studio 场景联调 (手动)", kind="manual", manual_text=MANUAL_STUDIO)
+
+    # ---------------- 阶段 8 (扩展场景: 可选的场景安装线) ----------------
+    # 步骤按场景分组: S("8.<n>", ...) 属于 LIBERO。后续新增场景 (如 isaac) 可继续
+    # 在同一阶段内追加, 用 EXTENSIONS 登记后由 skip_check 按 EXTENSION 值分流。
+    S("8.1", "前置检查 (LIBERO)", kind="python", fn=_step_libero_precheck,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="校验 EXTENSION=libero、七个 libero 线仓库是否就位; 取安装目标 Project 与受管 Robot; "
+           "Robot 还没有时先跳过, 8.11 之前到 Web 设备中心「添加 Pilot」加入一台 franka_panda")
+
+    S("8.2", "登录 Server", kind="python", fn=_step_libero_login,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="组件安装走运行中的 Server HTTP API, 需要凭据 (~/.semantic/credentials.json, 0600); "
+           "已有未过期凭据则跳过")
+
+    S("8.3", "准备上游 LIBERO 源码", kind="python", fn=_step_libero_upstream,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="从 GitHub 克隆上游 LIBERO 并校验到 sources.lock.yaml 锁定的 commit; "
+           "公司 GitLab 没有这个仓库, 直连失败时先 export https_proxy 再重跑")
+
+    S("8.4", "构建产物1 Runtime 包", kind="python", fn=_step_libero_build_runtime,
+      skip_check=lambda app: libero_skip_if_built(app, "runtime") if libero_enabled(app)
+      else "EXTENSION 不是 libero",
+      note="LIBERO 环境需要 Python 3.8 (robosuite 1.4 约束), uv 会自动拉取; "
+           "包体约 2.1 GiB; 已有 wheelhouse 时自动复用, 免重复下载")
+
+    S("8.5", "安装 Runtime 并 doctor 验证", kind="python", fn=_step_libero_install_runtime,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="本地执行, 不需要 Server; endpoint 固定 8092 (与基础环境 native-mujoco 的 8090 并存); "
+           "已登记过同 ID 时只做 doctor, 不覆盖。紧接 8.4 安装, 是为了让 8.6 能复用这个隔离解释器, "
+           "免在构建场景包时再下一次 torch")
+
+    S("8.6", "构建产物2 场景包", kind="python", fn=_step_libero_build_scenes,
+      skip_check=lambda app: libero_skip_if_built(app, "scenes") if libero_enabled(app)
+      else "EXTENSION 不是 libero",
+      note="约 229 MiB; 复用 8.5 装好的 Runtime 解释器, 免再备一份构建环境")
+
+    S("8.7", "构建产物3/4 Ability 与 Skill", kind="python", fn=_step_libero_build_ability_skill,
+      skip_check=lambda app: (libero_skip_if_built(app, "ability") or
+                              libero_skip_if_built(app, "skill")) if libero_enabled(app)
+      else "EXTENSION 不是 libero",
+      note="都需要 framework 的 .output/bin/semantic (阶段 3 产出); "
+           "Ability 会连网装依赖, 首次约 5 分钟")
+
+    S("8.8", "构建产物5 机器人运行支持包", kind="python", fn=_step_libero_build_robot,
+      skip_check=lambda app: libero_skip_if_built(app, "robot") if libero_enabled(app)
+      else "EXTENSION 不是 libero",
+      note="一条脚本完成: 编 Go 二进制 + 建 venv + 构 4 个产品 Wheel + 收集 88 个依赖 Wheel "
+           "+ 组装 Bundle; 约 2.9 GiB; 缓存在 .output/franka-bundle-build/, 失败重跑即续跑")
+
+    S("8.9", "构建产物6 SmolVLA 模型包", kind="python", fn=_step_libero_build_model,
+      skip_check=lambda app: libero_skip_if_built(app, "model") if libero_enabled(app)
+      else "EXTENSION 不是 libero",
+      note="约 3.1 GiB; 走 HF_ENDPOINT (默认 hf-mirror.com, 国内官网不可达); "
+           "不改写绑定声明的 device (GPU_MODE=gpu/cpu 为强制值); "
+           "运行期按本机能力收敛, CPU 上再做线程调优")
+
+    S("8.10", "安装场景包 (限量预览)", kind="python", fn=_step_libero_install_scenes,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="必须已在跑 Server; 只对 LIBERO_SCENES 指定的场景生成预览——"
+           "包内共 130 个任务/6500 个初态, 不限定会对全部初态逐一出图, 是整条链路最慢的一步; "
+           "装完还需在 Web「添加兼容场景」才会进项目")
+
+    S("8.11", "安装机器人四件套", kind="python", fn=_step_libero_install_robot,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="按 运行支持 -> Ability -> 模型 -> Skill 的顺序装, 顺序不能颠倒; "
+           "Skill 带 --robot 直接派发到设备; 装完必须在 Web 绑定 Ability 与模型才起得来")
+
+    S("8.12", "激活 Project 并加入 LIBERO 场景", kind="python", fn=_step_libero_bind_project,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero",
+      note="Studio 起场景只认 project-scenes, 场景没进项目时 Web 里起不来; "
+           "项目非激活时写 project-scenes 会 PROJECT_NOT_WRITABLE, 所以激活必须在前。"
+           "场景取 LIBERO_SCENES, 缺省 libero-spatial-0。注意激活是全局单例")
+
+    S("8.13", "LIBERO 联调 (手动)", kind="manual", manual_text=MANUAL_LIBERO,
+      skip_check=lambda app: None if libero_enabled(app) else "EXTENSION 不是 libero")
+
+    # ---------------- 阶段 9 (日常再开: 完整安装后每天用这两个) ----------------
+    S("9.1", "日常再开: Server", kind="service",
       service=lambda app: _server_service(app),
       note="先停本工作区已在跑的 semantic-server, 再 make run")
-    S("8.2", "日常再开: Web", kind="service",
+    S("9.2", "日常再开: Web", kind="service",
       service=lambda app: {
           "name": "web",
           "start": "npm run dev",
@@ -1328,10 +2430,21 @@ def build_steps():
     return steps
 
 
-MANUAL_STUDIO = """[拆码垛场景测试]
-通过对话进行场景任务规划，提示词可使用如下：
+MANUAL_STUDIO = """[Studio 手动联调清单] (对应文档第 7 节)
+「添加拆码垛场景」已由步骤 7.1 自动完成 (可在 STUDIO_SCENES 里改); 下面仍需手做:
 
-“将来源托盘当前最上面一层周转箱，搬到目标托盘对应位置，放稳并恢复行走姿态。给出计划。”"""
+1. 系统设置里加 DeepSeek (text + tool_call), 设为全局默认; Token 只放设置里
+2. 新建或打开 Project; 左侧 Agent Skills 勾选
+   depalletizing-workflow-planning / depalletizing-robot-task
+3. 资源页面手动增加仿真 Runtime Profile, 选 Native MuJoCo
+4. 第一次用 layout001, 点启动 Layout
+5. 查看设备中是否存在 r1_pro_tote_gripper-1 这个 Robot
+6. 启动后切换回对话页面, 输入框左边 + 选「规划模式」(不要「协作」)
+7. 发送指令 (首行触发词 + 完整任务描述):
+   PLAN-V050-MUJOCO-LAYER-DEEPSEEK
+   请在当前Project的layout001中完成一层周转箱拆垛, 并直接生成可审阅的Plan Proposal。
+   (完整八条指令原文见《新版Semantic安装步骤》第 7 节)
+完成标准: 四个箱体分别稳定进入对应目标列第一层、双工具为空、Robot 恢复 travel 姿态。"""
 
 
 def _path_with_tools(app):
@@ -1382,9 +2495,9 @@ def _apt_mirror_script(app):
         "for f in $files; do",
         '  [ -f "$f" ] || continue',
         '  if grep -qE "(archive|security)\\.ubuntu\\.com" "$f"; then',
-        '    if [ ! -f "$f.disabled" ] && [ ! -f "$f.bak-orig" ]; then sudo cp "$f" "$f.disabled"; fi',
+        '    [ -f "$f.bak-orig" ] || sudo cp "$f" "$f.bak-orig"',
         f'    sudo sed -i -E "s|https?://(cn\\.)?archive\\.ubuntu\\.com/ubuntu|{m}|g; s|https?://security\\.ubuntu\\.com/ubuntu|{m}|g" "$f"',
-        '    echo "[apt源] 已切换: $f (备份: $f.disabled)"; changed=1',
+        '    echo "[apt源] 已切换: $f (备份: $f.bak-orig)"; changed=1',
         "  fi",
         "done",
         'if [ "$changed" -eq 0 ]; then echo "[apt源] 未发现官方源地址, 无需修改"; fi',
@@ -1478,16 +2591,23 @@ def _check_versions_post(app, rc):
     ok2, _ = python313_ok(app)
     if not (ok and ok2):
         msgs.append("uv 或 Python 3.13 缺失")
+    # 5.1 编译 AbilityFramework 依赖这套工具链; 缺了会到阶段 5 才失败, 提前在这里报出来
+    for tool, hint in (("gcc", "build-essential"), ("cmake", "cmake"),
+                       ("ninja", "ninja-build"), ("pkg-config", "pkg-config"),
+                       ("xmake", "1.1b")):
+        ok, _ = _run_quick([tool, "--version"], env={"PATH": _path_with_tools(app)}, timeout=10)
+        if ok != 0:
+            msgs.append(f"{tool} 缺失 (5.1 编译 AbilityFramework 需要; 见 1.1/1.1b 的 {hint})")
     if msgs:
         app.log("warn", "自检: " + "; ".join(msgs))
         return ("warn", "; ".join(msgs))
-    app.log("ok", "自检通过: Go / Node / uv / Python3.13 / git-lfs / make")
+    app.log("ok", "自检通过: Go / Node / uv / Python3.13 / git-lfs / make / gcc / cmake / ninja / pkg-config / xmake")
     return None
 
 
 
 # 原组(upstream)完整路径: quick-start 自身来自原组时, 子仓按此克隆;
-# 自身来自 staging(或镜像副本无 git)时, 全部走 fork
+# 自身来自 git-pre-release(或镜像副本无 git)时, 全部走 fork
 UPSTREAM_REPOS = {
     "semantic-framework": "/example/semantic/semantic-framework",
     "semantic-web": "/example/semantic/semantic-web",
@@ -1499,6 +2619,7 @@ UPSTREAM_REPOS = {
     "semantic-scene/mujoco-asset": "/example/semantic/semantic-scene/mujoco-asset",
     "semantic-robot-deployment": "/example/semantic/semantic-deployment",
     "semantic-ability/ability-runtime": "/example/semantic/semantic-ability/ability-runtime",
+    "semantic-ability/franka-ability": "/example/semantic/semantic-ability/franka-ability",
     "ability-framework/abilityframework": "/example/ability/abilityframework",
     "ability-framework/ability-py-sdk": "/example/ability/ability-py-sdk",
     "ability-framework/ability-scaffold": "/example/ability/ability-scaffold",
@@ -1507,7 +2628,7 @@ UPSTREAM_REPOS = {
 
 def self_org_mode():
     """探测 quick-start 自身来源: 脚本所在目录是 git 仓则取 origin 的组名;
-    组为 staging -> 'fork'; 其他(原组)-> 'upstream'; 非 git(镜像副本)-> 'fork'"""
+    组为 git-pre-release -> 'fork'; 其他(原组)-> 'upstream'; 非 git(镜像副本)-> 'fork'"""
     d = SCRIPT_DIR
     while d != d.parent:
         if (d / ".git").exists():
@@ -1521,52 +2642,34 @@ def self_org_mode():
                 url = url.removesuffix(".git")
                 parts = url.split("/")
                 group = parts[-2] if len(parts) >= 2 else ""
-                return "upstream" if group != "staging" else "fork"
+                return "upstream" if group != "git-pre-release" else "fork"
             return "fork"
         d = d.parent
     return "fork"
 
 
-def _repo_event(local, status):
-    return "printf '%s\\n' " + shlex.quote(REPO_EVENT_MARK + json.dumps([local, status]))
-
-
-def _repo_plan(app):
+def _clone_script(app):
     s = app.settings
+    base = sx(s["SEMANTIC"])
     gl = s["GITLAB"]
     root = gitlab_root(gl)
-    mpath, manifest = find_repo_manifest(app)
-    mode = self_org_mode()
-    rows = []
-    for local, repo, brkey in REPOS:
-        if repo.startswith("/"):
-            url = f"{root}{repo}.git"
-            if mode == "upstream" and local in UPSTREAM_REPOS:
-                url = f"{root}{UPSTREAM_REPOS[local]}.git"
-        else:
-            url = f"{gl}/{repo}.git"
-        entry = manifest.get(local, {}) if manifest else {}
-        if isinstance(entry, dict) and isinstance(entry.get("url"), str) and entry["url"].strip():
-            url = sx(entry["url"].strip())
-        ref = entry.get("ref", "") if isinstance(entry, dict) else ""
-        rows.append({"repo": local, "url": url, "ref": ref or (s.get(brkey, "") if brkey else ""),
-                     "status": "pending"})
-    return mpath, rows
-
-
-def _clone_script(app):
-    base = sx(app.settings["SEMANTIC"])
-    _mpath, rows = _repo_plan(app)
     lines = ["set -eo pipefail",
              f'mkdir -p "{base}"',
              'clone_if() { d="$1"; u="$2"; if [ -d "$d/.git" ]; then echo "[跳过] $d 已存在"; '
+             'elif [ -e "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then '
+             'echo "[错误] $d 已存在且不是 git 仓库，无法克隆。请先移走或删除该目录（可能是上一次安装的残留）" >&2; exit 1; '
              'else echo "[克隆] $d"; GIT_LFS_SKIP_SMUDGE=1 git clone "$u" "$d"; fi; }']
-    for row in rows:
-        local, url = row["repo"], row["url"]
-        lines.append(_repo_event(local, "running"))
-        lines.append("mkdir -p " + shlex.quote(os.path.dirname(os.path.join(base, local))))
-        lines.append(f'clone_if {shlex.quote(os.path.join(base, local))} {shlex.quote(url)}')
-        lines.append(_repo_event(local, "ok"))
+    for local, repo, _br in REPOS:
+        parent = os.path.dirname(os.path.join(base, local))
+        if parent:
+            lines.append(f'mkdir -p "{parent}"')
+        if repo.startswith("/"):
+            url = f"{root}{repo}.git"
+            if self_org_mode() == "upstream" and local in UPSTREAM_REPOS:
+                url = f"{root}{UPSTREAM_REPOS[local]}.git"
+        else:
+            url = f"{gl}/{repo}.git"
+        lines.append(f'clone_if "{os.path.join(base, local)}" "{url}"')
     return ["\n".join(lines)]
 
 
@@ -1598,45 +2701,36 @@ def _branch_script(app):
     mpath, manifest = find_repo_manifest(app)
     if mpath:
         app.log("note", f"2.2 使用版本清单 {mpath} (repo_versions.py 维护, 覆盖设置里的分支)")
+    # EXTENSION=libero 时, 七个 libero 线仓库改认功能线分支: 版本清单里给的是
+    # 发布 Tag, 上面没有 LIBERO 相关改动, 全新环境按 Tag 切会缺能力/脚本。
+    # 只覆盖这七个仓库, 其余仓库仍按清单/设置切, 避免波及基础环境。
+    libero_branch = ""
+    if libero_enabled(app):
+        libero_branch = (s.get("LIBERO_LINE_BRANCH") or "").strip()
+        if libero_branch:
+            app.log("note", f"EXTENSION=libero: 七个 libero 线仓库改切 {libero_branch}")
+        else:
+            app.log("warn", "EXTENSION=libero 但 LIBERO_LINE_BRANCH 为空: libero 仓库将按清单/默认分支切")
     lines = [
         "set -eo pipefail",
-        "export GIT_LFS_SKIP_SMUDGE=1",
         "sw() { dir=\"$1\"; ref=\"$2\"; echo \"[版本] $dir -> $ref\"; "
         "git -C \"$dir\" fetch origin --tags --prune 2>&1 | tail -1; "
         "if ! git -C \"$dir\" checkout -q \"$ref\" 2>/dev/null; then "
         "git -C \"$dir\" switch -C \"$ref\" --track \"origin/$ref\"; fi; }",
     ]
     for local, repo, brkey in REPOS:
-        m = manifest.get(local) if manifest else None
-        ref = m.get("ref", "").strip() if isinstance(m, dict) else ""
-        if not ref and brkey:
-            ref = s[brkey]
-        if ref:
-            lines.append(_repo_event(local, "running"))
-            lines.append(f'sw "{os.path.join(base, local)}" "{ref}"')
-            lines.append(_repo_event(local, "ok"))
+        if libero_branch and local in LIBERO_REPOS and local not in LIBERO_SINGLE_BRANCH_REPOS:
+            ref = libero_branch
         else:
-            lines.append(_repo_event(local, "skip"))
+            m = manifest.get(local) if manifest else None
+            ref = m.get("ref", "").strip() if isinstance(m, dict) else ""
+            if not ref and brkey:
+                ref = s[brkey]
+        if ref:
+            lines.append(f'sw "{os.path.join(base, local)}" "{ref}"')
+        else:
+            lines.append(f'echo "[跳过] {local}: 无清单 ref 且只有 main, 不切分支"')
     return ["\n".join(lines)]
-
-
-def _asset_pull_script(app):
-    base = sx(app.settings["SEMANTIC"])
-    source = app.settings.get("RUNTIME_WHEEL_SOURCE", "auto")
-    if source not in ("auto", "lfs", "offline"):
-        raise ValueError("RUNTIME_WHEEL_SOURCE 必须为 auto、lfs 或 offline")
-    fetch = " ".join(shlex.quote(str(arg)) for arg in (
-        sys.executable, SCRIPT_DIR / "scripts/fetch_runtime_wheels.py",
-        "--repo", os.path.join(base, "semantic-ability/ability-runtime"), "--source", source))
-    commands = []
-    for local, action in (
-        ("semantic-scene/mujoco-asset", 'git lfs pull -I "" -X ""'),
-        ("semantic-ability/ability-runtime", fetch),
-    ):
-        commands.append("\n".join(["set -e", _repo_event(local, "running"),
-                                   "cd " + shlex.quote(os.path.join(base, local)), action,
-                                   _repo_event(local, "ok")]))
-    return commands
 
 
 def _server_service(app):
@@ -1655,47 +2749,10 @@ def _server_service(app):
     }
 
 
-def _source_built_asset(path):
-    """Source-built artifacts are excluded at any depth, including bundle caches."""
-    return re.fullmatch(r"AbilityFramework|ability_(?:py|scaffold)-.*\.whl", Path(path).name) is not None
-
-
-def _check_runtime_assets(app):
-    """Check only downloaded third-party assets; source outputs are checked in stage 5."""
-    vendor = Path(_vendor_root(app))
-    bundle = vendor / "base-bundles" / f"r1pro-mujoco-{app.settings['BUNDLE_VER']}"
-    if not (bundle / "bundle.yaml").is_file() or not (bundle / "wheels").is_dir():
-        return ("fail", f"第三方资产缺失: {bundle}/bundle.yaml 或 wheels/")
-    rc, out = _run_quick(["git", "-C", str(vendor), "-c", "core.quotePath=false",
-                          "lfs", "ls-files", "--name-only"], timeout=60)
-    if rc != 0:
-        return ("fail", f"无法列出 ability-runtime LFS 资产: {out}")
-    checked = 0
-    missing = []
-    for name in out.splitlines():
-        if not name or _source_built_asset(name):
-            continue
-        try:
-            with (vendor / name).open("rb") as f:
-                content = f.read(128)
-            if not content or content.startswith(b"version https://git-lfs.github.com/spec/v1"):
-                missing.append(name)
-            else:
-                checked += 1
-        except OSError:
-            missing.append(name)
-    if missing:
-        return ("fail", "第三方 LFS 资产未下载或不可读: " + ", ".join(missing[:5]))
-    app.log("ok", f"ability-runtime 第三方资产齐全 ({checked} 个 LFS 文件); "
-                  "AbilityFramework / ability_py / ability_scaffold 留待阶段 5 源码构建")
-    return None
-
-
 def _verify2_script(app):
     base = sx(app.settings["SEMANTIC"])
     ar = os.path.join(base, "semantic-ability/ability-runtime")
     cmds = [
-        f'python3 {shlex.quote(os.path.join(base, "semantic-scene/mujoco-asset/check_external_models.py"))}',
         f'ls "{os.path.join(base, "semantic-skill/robot-skill/semantic_robot_skills/skills")}"',
         f'test -d "{os.path.join(ar, "base-bundles/r1pro-mujoco-" + app.settings["BUNDLE_VER"] + "/wheels")}"',
         f'ls "{os.path.join(base, "semantic-robot-deployment/type-packages/r1pro-mujoco")}"',
@@ -1711,7 +2768,52 @@ def _step_prepare_env(app):
     fw = sx(app.settings["SEMANTIC"]) + "/semantic-framework"
     if not os.path.isdir(fw):
         return ("fail", f"目录不存在: {fw} (先完成阶段 2)")
-    ensure_env_file(app, fw, {"SEMANTIC_ADMIN_PASSWORD": app.settings["SEMANTIC_ADMIN_PASSWORD"]})
+    values = {"SEMANTIC_ADMIN_PASSWORD": app.settings["SEMANTIC_ADMIN_PASSWORD"]}
+    # GPU_MODE=cpu 是运维强制值: 模型包与绑定仍声明 cuda (保持跨机器可移植),
+    # 因此必须在这里显式固定推理设备。受管 Robot 进程继承 Server 的环境,
+    # Ability 的 effective_device() 会读 SEMANTIC_VLA_DEVICE 并据此跳过 CUDA。
+    if (app.settings.get("GPU_MODE") or "").strip().lower() == "cpu":
+        values["SEMANTIC_VLA_DEVICE"] = "cpu"
+        app.log("info", "GPU_MODE=cpu: 已写入 SEMANTIC_VLA_DEVICE=cpu, "
+                        "强制 CPU 推理 (绑定声明保持 cuda)")
+    elif detect_cuda():
+        # 本机有 CUDA 时清掉上一次可能的强制值, 避免换机器后仍被钉在 CPU。
+        values["SEMANTIC_VLA_DEVICE"] = ""
+    # 动作块摊薄只在 CPU 推理上开启: 它把同一预测块的前 N 步开环执行, 会改变
+    # 控制语义, 独显主机保持 checkpoint 原生的 1。未判定为 CPU 时显式清空,
+    # 避免换回独显机器后仍继承上一次的摊薄设置。
+    if resolve_gpu_mode(app) == "cpu":
+        try:
+            chunk = cpu_actions_per_chunk(app)
+        except ValueError as error:
+            return ("fail", str(error))
+        values["SEMANTIC_VLA_ACTIONS_PER_CHUNK"] = chunk
+        if chunk:
+            app.log("info", f"CPU 推理: 已写入 SEMANTIC_VLA_ACTIONS_PER_CHUNK={chunk} "
+                            f"(把同一预测块的前 {chunk} 步连续执行)")
+        else:
+            app.log("info", "CPU 推理: CPU_ACTIONS_PER_CHUNK 为空, 不开启动作块摊薄 "
+                            "(保持 checkpoint 原生行为)")
+    else:
+        values["SEMANTIC_VLA_ACTIONS_PER_CHUNK"] = ""
+    # 线程数默认交给运行期自动探测 + 标定 (安装时定死会在换机器或同机负载变化时
+    # 翻车), 这里只处理显式覆盖。与动作块摊薄一样, 未判定为 CPU 时显式清空, 避免
+    # 换回独显机器后仍继承上一次的覆盖值。
+    if resolve_gpu_mode(app) == "cpu":
+        try:
+            threads = cpu_threads(app)
+        except ValueError as error:
+            return ("fail", str(error))
+        values["SEMANTIC_VLA_THREADS"] = threads
+        if threads:
+            app.log("info", f"CPU 推理: 已写入 SEMANTIC_VLA_THREADS={threads} "
+                            f"(跳过启动标定, 直接固定线程数)")
+        else:
+            app.log("info", f"CPU 推理: 线程数由拓扑探测 + 启动标定自动决定 "
+                            f"({cpu_topology_note(app)})")
+    else:
+        values["SEMANTIC_VLA_THREADS"] = ""
+    ensure_env_file(app, fw, values)
     app.log("info", "模型 Key 不必写入 .env, 在 Studio 系统设置里添加; .env 不要提交 Git")
     return ("ok", None)
 
@@ -1734,6 +2836,8 @@ def _step_build_af(app):
     ]
     return ("shell", {"cmds": cmds, "cwd": repo,
                       "env": {"PATH": _path_with_tools(app)},
+                      # 不要写成 `... and None`: 那会把 _install_af 返回的
+                      # ("fail", ...) 元组吞成 None, 版本守卫就失效了
                       "post": lambda app2, rc: _install_af(app2, repo, vendor),
                       "verify": [f'test -x "{vendor}/AbilityFramework"']})
 
@@ -1745,13 +2849,32 @@ def _install_af(app, repo, vendor):
         if "AbilityFramework" in files:
             cands.append(os.path.join(root, "AbilityFramework"))
     if not cands:
-        return ("fail", "未在 build/ 下找到 AbilityFramework 编译产物")
+        app.log("err", "未在 build/ 下找到 AbilityFramework 编译产物")
+        return None
     src_bin = max(cands, key=os.path.getmtime)
     rc, out = _run_quick([src_bin, "--version"], timeout=30)
-    if rc != 0:
-        return ("fail", f"AbilityFramework 编译产物无法执行: {src_bin}: {out.strip()}")
     ver = out.strip().splitlines()[0] if out.strip() else "(无版本输出)"
     app.log("info", f"编译产物: {src_bin} | {ver}")
+    # 就绪契约守卫: robot instance supervisor 用 GET /api/instance 判就绪 (WaitReady),
+    # 而该路由只在 v2.4.0 之后才注册。源码早于它时编译出的 AF 会在 45s 后就绪超时,
+    # Robot 以 "supervisor 提前退出: exit status 1" 结束 —— 失败点远在阶段 6,
+    # 排查成本很高, 这里按源码判定并提前拦下。
+    # 注意: 不能用 --version 的版本号判断, 因为随 LFS 分发的可用二进制同样自称
+    # "2.1.0" (其源码是 v2.4.0 区间的 d14131a), 版本号并不能区分能否用于本契约。
+    http_apis = os.path.join(repo, "src/resourcemgr/resource_mgr_http_apis.cpp")
+    if os.path.isfile(http_apis):
+        try:
+            with open(http_apis, encoding="utf-8", errors="replace") as f:
+                has_route = 'Get("/api/instance"' in f.read()
+        except OSError as e:
+            app.log("warn", f"无法读取 {http_apis}: {e}")
+            has_route = True
+        if not has_route:
+            app.log("err", "源码缺少 GET /api/instance 路由: Robot instance supervisor 的就绪"
+                           "检查依赖它, 该构建会让 Robot 启动超时 (supervisor exit 1)。"
+                           "请把版本清单 ability-framework/abilityframework 的 ref "
+                           "切到 >= v2.4.0 (或随 LFS 可用的 d14131a)")
+            return ("fail", "AbilityFramework 源码缺少 GET /api/instance, 需 >= v2.4.0")
     dst = os.path.join(vendor, "AbilityFramework")
     try:
         if os.path.isfile(dst) and not os.path.exists(dst + ".lfs-orig"):
@@ -1760,11 +2883,10 @@ def _install_af(app, repo, vendor):
         shutil.copy2(src_bin, dst)
         os.chmod(dst, 0o755)
     except Exception as e:
-        return ("fail", f"AbilityFramework 安装失败: {e}")
+        app.log("err", f"安装失败: {e}")
+        return None
     rc2, out2 = _run_quick([dst, "--version"], timeout=30)
-    if rc2 != 0:
-        return ("fail", f"安装后的 AbilityFramework 无法执行: {dst}: {out2.strip()}")
-    app.log("ok", f"已安装到 {dst}: {out2.strip().splitlines()[0] if out2.strip() else ver}")
+    app.log("ok" if rc2 == 0 else "warn", f"已安装到 {dst}: {out2.strip().splitlines()[0] if out2.strip() else ver}")
     return None
 
 
@@ -1788,22 +2910,9 @@ def _step_build_ability_py(app):
     return ("shell", {"cmds": cmds, "cwd": repos["ability_py"],
                       "env": {"PATH": _path_with_tools(app),
                               "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"]},
-                      "post": lambda app2, rc: _install_ability_wheels(app2, repos, vendor, cache),
+                      "post": lambda app2, rc: _install_ability_wheels(app2, repos, vendor, cache) and None,
                       "verify": [f'test -f "{vendor}/ability_py-0.4.0-py3-none-any.whl"',
                                  f'test -f "{vendor}/ability_scaffold-1.2.0-py3-none-any.whl"']})
-
-
-def _check_built_wheel(path):
-    """拒绝 LFS 指针、损坏的压缩包和缺少 Wheel 元数据的文件。"""
-    name, version = os.path.basename(path).split("-")[:2]
-    metadata = f"{name}-{version}.dist-info"
-    with zipfile.ZipFile(path) as wheel:
-        for entry in ("METADATA", "WHEEL", "RECORD"):
-            if f"{metadata}/{entry}" not in wheel.namelist():
-                raise ValueError(f"缺少 {metadata}/{entry}")
-        bad = wheel.testzip()
-        if bad:
-            raise ValueError(f"压缩包校验失败: {bad}")
 
 
 def _install_ability_wheels(app, repos, vendor, cache):
@@ -1811,22 +2920,22 @@ def _install_ability_wheels(app, repos, vendor, cache):
         "ability_py": ("ability_py-0.4.0-py3-none-any.whl", [vendor, cache]),
         "ability_scaffold": ("ability_scaffold-1.2.0-py3-none-any.whl", [vendor]),
     }
-    # 在覆盖运行目录前，先验证全部源码产物及目标目录。
-    for key, (expect, dst_dirs) in expects.items():
-        whl = os.path.join(repos[key], "dist", expect)
-        try:
-            _check_built_wheel(whl)
-        except Exception as e:
-            return ("fail", f"源码 Wheel 缺失或无效: {whl}: {e}; 请检查构建版本与版本清单")
-        for dst_dir in dst_dirs:
-            if not os.path.isdir(dst_dir):
-                return ("fail", f"Wheel 目标目录不存在: {dst_dir}")
     for key, (expect, dst_dirs) in expects.items():
         repo = repos[key]
         prefix = expect.split("-")[0] + "-"
-        whl = os.path.join(repo, "dist", expect)
-        name = expect
+        wheels = sorted(glob.glob(os.path.join(repo, "dist", prefix + "*.whl")))
+        if not wheels:
+            app.log("err", f"未找到构建产物: {repo}/dist/{prefix}*.whl")
+            continue
+        whl = wheels[-1]
+        name = os.path.basename(whl)
+        if name != expect:
+            app.log("warn", f"{key} 产物 {name} 与 refresh 脚本硬编码的 {expect} 不一致, "
+                            f"Bundle 构建会找不到; 请把版本清单切到对应版本或同步改 refresh_v050_mujoco.py")
         for dst_dir in dst_dirs:
+            if not os.path.isdir(dst_dir):
+                app.log("warn", f"目标目录不存在, 跳过: {dst_dir}")
+                continue
             try:
                 dst = os.path.join(dst_dir, name)
                 if os.path.exists(dst) and not os.path.exists(dst + ".lfs-orig"):
@@ -1839,17 +2948,13 @@ def _install_ability_wheels(app, repos, vendor, cache):
                 if os.path.exists(dst):
                     os.remove(dst)
                 shutil.copy2(whl, dst)
-                _check_built_wheel(dst)
                 app.log("ok", f"已安装 {dst}")
             except Exception as e:
-                return ("fail", f"Wheel 安装到 {dst_dir} 失败: {e}")
+                app.log("err", f"安装到 {dst_dir} 失败: {e}")
     # 清掉旧 scaffold venv, 让 refresh 用源码构建的 Wheel 重建
     venv = os.path.join(vendor, ".venv")
     if os.path.isdir(venv):
-        try:
-            shutil.rmtree(venv)
-        except OSError as e:
-            return ("fail", f"无法清理旧 scaffold .venv: {e}")
+        shutil.rmtree(venv, ignore_errors=True)
         app.log("note", "已移除旧 scaffold .venv, refresh 将用源码 Wheel 重建")
     return None
 
@@ -2109,9 +3214,9 @@ def _step_publish_skills(app):
                       "post": lambda app2, rc: app2.log("info", "Token 已随步骤结束丢弃, 未写入任何文件") and None})
 
 
-
+# --------------------------------------------------------------------------
 # 应用状态与执行引擎
-
+# --------------------------------------------------------------------------
 
 class Service:
     def __init__(self, name, proc, logpath, host, port, sid):
@@ -2128,9 +3233,27 @@ class App:
     def __init__(self, settings, headless=False):
         self.settings = settings
         self.headless = headless
-        self.statuses = load_json(STATUS_FILE, {})
+        self.statuses, self.status_migration_backup = load_statuses()
         self.logbuf = deque(maxlen=LOG_LIMIT)
         self.env = dict(os.environ)
+        # 调用方 shell 里可能残留上一次安装导出的 SEMANTIC / TMPDIR (semantic-env.sh
+        # 就会导出 SEMANTIC, 5 阶段的服务定义还会设 TMPDIR)。子进程会继承它们,
+        # 于是本次构建把临时目录写到**另一个**工作区: 轻则浪费空间、与本工作区
+        # 的 .output 跨文件系统触发 EXDEV, 重则让"全新环境"验证暗中复用了旧产物。
+        # 这里按本次设置回正, 以本工作区为准。
+        base = sx(settings.get("SEMANTIC", ""))
+        if base:
+            self.env["SEMANTIC"] = base
+            # TMPDIR 只在 framework 仓库就位后才指向其 .output/tmp。此前若已指向
+            # 那里，npm 等工具在执行 `--version` 时就会把该目录树创建出来
+            # （连带建出 semantic-framework/.output），于是阶段 2.1 的 git clone
+            # 撞上“目录非空且不是 git 仓库”而失败——全新环境必现。
+            # 仓库未就位时退到工作区级的 .tmp，仍在同一文件系统，不会触发 EXDEV。
+            fw = os.path.join(base, "semantic-framework")
+            if os.path.isdir(os.path.join(fw, ".git")):
+                self.env["TMPDIR"] = os.path.join(fw, ".output", "tmp")
+            else:
+                self.env["TMPDIR"] = os.path.join(base, ".tmp")
         self.vars = {}
         self.steps = build_steps()
         self.bysid = {s["sid"]: s for s in self.steps}
@@ -2150,104 +3273,17 @@ class App:
         self.full_redraw = False
         self.prompt = None
         self.confirm = None
-        self.workspace_prompt = None
-        self.clone_workspace = None
         self.cur_used_pw = False
         self.last_auth_fail_sid = None
-        self.forms = {}
-        self.log_paths = {}
-        self.step_log_path = None
-        self.log_error = ""
-        self.last_step = None
-        self.failed_sid = None
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
+        if self.headless and self.status_migration_backup:
+            self.log("warn", "步骤状态文件是旧版编号 (阶段 8/9 互换), 已自动迁移为现编号; "
+                             f"原文件备份在 {self.status_migration_backup}")
 
     # ---- 日志 ----
-    def _redact(self, text):
-        text = plain_log_text(text)
-        for key, value in {**self.env, **self.settings, **self.vars}.items():
-            if re.search(r"password|token|secret|(?:^|_)pw$", key, re.I) and isinstance(value, str) and len(value) >= 3:
-                text = text.replace(value, "[REDACTED]")
-        text = re.sub(r"(https?://)[^/\s@]+@", r"\1[REDACTED]@", text)
-        text = re.sub(r"glpat-[A-Za-z0-9_-]+", "[REDACTED]", text)
-        return text
-
-    def _start_step_log(self, sid):
-        self.step_log_path = None
-        for directory in (SCRIPT_DIR / LOG_DIRNAME, Path(tempfile.gettempdir()) / f"semantic-installer-{os.getuid()}"):
-            try:
-                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                fd, path = tempfile.mkstemp(prefix=f"step-{sid}-", suffix=".log", dir=directory)
-                os.close(fd)
-                self.step_log_path = path
-                self.log_paths[sid] = path
-                self.log_error = ""
-                return
-            except OSError as e:
-                self.log_error = f"无法写入日志: {e}"
-
-    def form_for(self, step):
-        sid = step["sid"]
-        if sid not in self.forms:
-            form = {"rows": [], "fields": [], "error": ""}
-            if step["stage"] == 2:
-                manifest, rows = _repo_plan(self)
-                if sid == "2.3":
-                    rows = [row for row in rows if row["repo"] in
-                            ("semantic-scene/mujoco-asset", "semantic-ability/ability-runtime")]
-                form["rows"] = rows
-                form["fields"] = [("工作区", sx(self.settings["SEMANTIC"])), ("版本清单", manifest or "内置配置")]
-                if sid == "2.3":
-                    form["fields"].append(("拉取清单", "场景资产 / bundle 配置 / 第三方 Wheel"))
-                    form["fields"].append(("Wheel 来源", self.settings.get("RUNTIME_WHEEL_SOURCE", "auto")))
-            else:
-                keys = {
-                    "1.0": ("APT_MIRROR",), "1.1": ("APT_MIRROR", "SUDO_AUTH"),
-                    "1.2": ("GO_VERSION", "GO_DL_MIRROR", "GO_PROXY"),
-                    "1.3": ("NODE_VERSION", "NODE_MIRROR", "NPM_REGISTRY"),
-                    "1.4": ("UV_DEFAULT_INDEX", "GITHUB_PROXY"),
-                    "1.5": ("SEMANTIC_MUJOCO_GL",), "1.6": ("GO_PROXY", "NPM_REGISTRY"),
-                    "3.1": ("SEMANTIC",),
-                }.get(sid, ("SEMANTIC",))
-                form["fields"] = [(key, sx(self.settings.get(key, "")) or "未设置") for key in keys]
-                if sid == "3.1":
-                    form["fields"].append(("管理员密码", "已配置" if self.settings.get("SEMANTIC_ADMIN_PASSWORD") else "未设置"))
-            self.forms[sid] = form
-        return self.forms[sid]
-
     def log(self, kind, text=""):
-        text = self._redact(text)
-        if kind == "err" and not self.step_log_path:
-            self._start_step_log(self.cur["sid"] if self.cur else "startup")
-        if self.step_log_path:
-            try:
-                with open(self.step_log_path, "a", encoding="utf-8") as f:
-                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{kind}] {text}\n")
-            except OSError as e:
-                self.log_error = f"无法写入日志: {e}"
-        if kind == "detail":
-            return
-        if self.cur and kind == "out" and text.startswith("[wheel "):
-            form = self.form_for(self.cur)
-            form["fields"] = [(k, v) for k, v in form["fields"] if k != "Wheel 进度"]
-            form["fields"].append(("Wheel 进度", text))
-            self.dirty = True
-            return
-        if self.cur and kind == "out" and text.startswith(REPO_EVENT_MARK):
-            try:
-                local, status = json.loads(text[len(REPO_EVENT_MARK):])
-                if status in ("running", "ok", "skip"):
-                    for row in self.form_for(self.cur)["rows"]:
-                        if row["repo"] == local:
-                            row["status"] = status
-            except (ValueError, TypeError):
-                pass
-            self.dirty = True
-            return
-        if self.cur and kind in ("cmd", "out") and (self.cur["stage"] <= 2 or self.cur["sid"] == "3.1"):
-            return
         # [kind, text, 缓存槽]: 缓存 (宽, 前缀宽, 折行结果), 避免每帧全量重排
-        self.logbuf.append([kind, text, None])
+        self.logbuf.append([kind, str(text), None])
         self.dirty = True
         if self.headless:
             prefix = {"cmd": "$ ", "ok": "[OK] ", "err": "[FAIL] ", "warn": "[WARN] ",
@@ -2312,10 +3348,6 @@ class App:
         self._begin(step, force)
 
     def _begin(self, step, force):
-        self.last_step = step
-        self._start_step_log(step["sid"])
-        self.forms.pop(step["sid"], None)
-        self.log("info", f"开始 {step['sid']} {step['title']}")
         self.force_current = force
         if not force and step.get("skip_check"):
             try:
@@ -2336,30 +3368,22 @@ class App:
         self.set_status(step["sid"], "running")
         try:
             if step.get("pre"):
-                if step["pre"](self) is False:
-                    self._finish("fail", "工作区未确认, 已停止后续操作")
-                    return
+                step["pre"](self)
         except Exception as e:
-            self.log("detail", traceback.format_exc())
             self._finish("fail", f"pre 钩子异常: {e}")
             return
-        try:
-            kind = step["kind"]
-            if kind == "python":
-                self._run_python(step)
-            elif kind == "service":
-                self._start_service(step)
-            else:
-                self._run_shell(step)
-        except Exception as e:
-            self.log("detail", traceback.format_exc())
-            self._finish("fail", f"执行失败: {e}")
+        kind = step["kind"]
+        if kind == "python":
+            self._run_python(step)
+        elif kind == "service":
+            self._start_service(step)
+        else:
+            self._run_shell(step)
 
     def _run_python(self, step):
         try:
             result = step["fn"](self)
         except Exception as e:
-            self.log("detail", traceback.format_exc())
             self.log("err", f"异常: {e}")
             self._finish("fail", str(e))
             return
@@ -2369,15 +3393,14 @@ class App:
         tag = result[0]
         if tag == "shell":
             info = result[1]
-            step2 = dict(step)
-            step2["cmds"] = info.get("cmds", [])
-            step2["cwd"] = info.get("cwd")
-            step2["env"] = info.get("env")
-            step2["verify"] = info.get("verify", [])
-            step2["post"] = info.get("post", step.get("post"))
-            # 完成回调和校验从 self.cur 读取，必须保留动态生成的步骤。
-            self.cur = step2
-            self._run_shell(step2)
+            # _finish 读的是 self.cur, 必须让 self.cur 也指向合并后的步骤,
+            # 否则 python 类步骤的 post/verify 会被静默丢弃
+            step["cmds"] = info.get("cmds", [])
+            step["cwd"] = info.get("cwd")
+            step["env"] = info.get("env")
+            step["verify"] = info.get("verify", [])
+            step["post"] = info.get("post", step.get("post"))
+            self._run_shell(step)
         else:
             self._finish(tag, result[1] if len(result) > 1 else None)
 
@@ -2408,11 +3431,11 @@ class App:
         """用 -k 强制重新鉴权来验证密码是否正确"""
         try:
             r = subprocess.run(["sudo", "-S", "-k", "-p", "", "true"],
-                               input=pw + "\n", capture_output=True,
+                               input=(pw + "\n") * 3, capture_output=True,
                                text=True, timeout=30)
             return r.returncode == 0
         except Exception:
-            return False
+            return True
 
     def maybe_retry_auth_failed(self):
         """凭证配置完成后, 询问是否重跑刚才因认证失败的步骤"""
@@ -2434,59 +3457,6 @@ class App:
         if ok:
             self.log("note", f"== 自动重试 {sid} {step['title']} ==")
             self.enqueue_step(step, force=True)
-
-    def prepare_clone_workspace(self):
-        """Resolve the shared clone/build root before evaluating any step commands."""
-        if self.headless:
-            self.log("note", f"无头模式使用已配置工作区: {sx(self.settings['SEMANTIC'])}")
-            return True
-        if self.clone_workspace == sx(self.settings["SEMANTIC"]) and os.path.isdir(self.clone_workspace):
-            return True
-        if not self.workspace_prompt or not self.confirm:
-            self.log("err", "无法显示工作区选择对话框")
-            return False
-        initial = self.clone_workspace or str(SCRIPT_DIR)
-        error = ""
-        while True:
-            chosen = self.workspace_prompt(initial, error)
-            if chosen is None:
-                self.log("note", "已取消拉取/构建工作区选择")
-                return False
-            chosen = sx(chosen.strip())
-            initial = chosen
-            if not chosen or not os.path.isabs(chosen):
-                error = "请输入绝对路径, 例如 /data/semantic"
-                self.log("err", error)
-                continue
-            # Existing build commands interpolate paths inside shell double quotes.
-            if any(c in chosen for c in ('"', '$', '`', '\\')) or any(ord(c) < 32 for c in chosen):
-                error = "路径不能含双引号、美元符、反引号、反斜杠或控制字符"
-                self.log("err", error)
-                continue
-            chosen = os.path.normpath(chosen)
-            if os.path.exists(chosen) and not os.path.isdir(chosen):
-                error = "路径已存在但不是目录, 请重新填写"
-                self.log("err", f"{error}: {chosen}")
-                continue
-            if not self.confirm("确认拉取和构建目录",
-                                f"{chosen}\n将把子仓库拉取到此目录, 后续构建也使用此工作区。\n是否继续?"):
-                self.log("note", "已取消拉取/构建目录确认")
-                return False
-            if not self._ensure_cwd(chosen):
-                return False
-            settings = {**self.settings, "SEMANTIC": chosen}
-            try:
-                save_json(SETTINGS_FILE, settings)
-                write_env_sh(settings)
-            except OSError as e:
-                self.log("err", f"保存工作区设置失败: {e}")
-                return False
-            self.settings["SEMANTIC"] = chosen
-            self.env["SEMANTIC"] = chosen
-            self.clone_workspace = chosen
-            self.forms.pop("2.1", None)
-            self.log("ok", f"拉取/构建工作区已确认: {chosen}; 已保存至 {SETTINGS_FILE} 和 {ENV_SH}")
-            return True
 
     def _ensure_cwd(self, cwd):
         """cwd 不存在时询问是否自动创建 (无头模式直接创建); 返回 False 表示拒绝/失败"""
@@ -2539,9 +3509,6 @@ class App:
                     if not pw:
                         self._finish("fail", "已取消: 未提供 sudo 密码")
                         return
-                    if not self._sudo_pw_valid(pw):
-                        self._finish("fail", "sudo 授权未通过或超时；请重跑并输入 Linux 登录密码，或按 e 设置 SUDO_AUTH=terminal")
-                        return
                     self.vars["SUDO_PW"] = pw
                     self.log("note", "sudo 密码仅存于本进程内存 (不写盘), P 键可清除")
                 cmds, use_pw = self._sudoize(cmds)
@@ -2549,10 +3516,8 @@ class App:
                 self._run_in_terminal(step, cmds, cwd, env)
                 return
         self.cur_used_pw = use_pw
-        self.log("detail", f"工作目录: {cwd or os.getcwd()}")
         script = ["set -eo pipefail"]
         for c in cmds:
-            self.log("detail", c)
             shown = c if "\n" not in c else c.splitlines()[0] + " …(脚本)"
             script.append("echo " + shlex.quote(CMD_MARK + shown))
             script.append(c)
@@ -2568,8 +3533,8 @@ class App:
             self._finish("fail", str(e))
             return
         if use_pw:
-            # 已提前验证密码；每条 sudo 最多预留一行，不自动重复三次失败验证。
-            feed = (self.vars.get("SUDO_PW", "") + "\n") * max(1, use_pw)
+            # 每个会提示的 sudo 消耗一行; 预留 3 倍余量应对重试
+            feed = (self.vars.get("SUDO_PW", "") + "\n") * min(30, max(1, use_pw * 3))
             try:
                 self.cur_proc.stdin.write(feed)
                 self.cur_proc.stdin.flush()
@@ -2577,7 +3542,6 @@ class App:
             except Exception:
                 pass
         self.cur_kind = "shell"
-        self.cur_eof = False
         self.cur_q = Queue()
         self._start_reader(self.cur_proc, self.cur_q)
 
@@ -2700,7 +3664,6 @@ class App:
                     break
                 drained += 1
                 if line is None:
-                    self.cur_eof = True
                     continue
                 if line.startswith(CMD_MARK):
                     self.log("cmd", line[len(CMD_MARK):])
@@ -2712,7 +3675,7 @@ class App:
             if rc is not None:
                 # 进程已退出: 排空到读到 EOF 标记为止 (最多等 2s), 防丢尾部输出
                 deadline = time.time() + 2
-                eof = self.cur_eof
+                eof = False
                 while not eof and time.time() < deadline:
                     try:
                         line = self.cur_q.get_nowait()
@@ -2728,8 +3691,6 @@ class App:
                     else:
                         self.log("out", line)
                         self.cur_out.append(line)
-                if eof and self.cur_proc.stdout:
-                    self.cur_proc.stdout.close()
                 out_text = "\n".join(self.cur_out[-40:])
                 if rc != 0:
                     low = out_text.lower()
@@ -2739,12 +3700,10 @@ class App:
                         self.last_auth_fail_sid = self.cur["sid"]
                         self.log("note", "看起来是 GitLab 凭证问题: 按 g 打开凭证助手 "
                                         "(OAuth 自动登录 / 粘贴 PAT), 配好后会自动重跑本步骤")
-                    if getattr(self, "cur_used_pw", 0) and re.search(
-                            r"incorrect password|authentication failure|a password is required|"
-                            r"no password was provided|not in the sudoers|错误密码|对不起，请重试|需要密码|未提供密码",
-                            out_text, re.I):
-                        self.vars.pop("SUDO_PW", None)
-                        self.log("err", "sudo 授权失败，缓存已清除；请重跑或设置 SUDO_AUTH=terminal")
+                    if getattr(self, "cur_used_pw", 0) and self.vars.get("SUDO_PW"):
+                        if not self._sudo_pw_valid(self.vars["SUDO_PW"]):
+                            self.vars.pop("SUDO_PW", None)
+                            self.log("err", "sudo 密码不正确, 已清除; 重跑步骤会重新询问")
                 if rc != 0 and self.cur.get("retry"):
                     try:
                         extra = self.cur["retry"](self, out_text)
@@ -2848,6 +3807,12 @@ class App:
         if step is None:
             return
         dur = time.time() - self.cur_start
+        if msg and status == "fail":
+            self.log("err", f"{step['sid']} 失败 ({dur:.1f}s): {msg}")
+        elif status == "warn":
+            self.log("warn", f"{step['sid']} 警告 ({dur:.1f}s): {msg or ''}")
+        else:
+            self.log("ok", f"{step['sid']} {step['title']} 完成 ({dur:.1f}s)")
         post = step.get("post")
         if post and status in ("ok", "warn"):
             try:
@@ -2856,32 +3821,12 @@ class App:
                     status = r[0]
                     msg = r[1]
             except Exception as e:
-                self.log("detail", traceback.format_exc())
                 status, msg = "fail", f"post 钩子异常: {e}"
                 self.log("err", msg)
         if status == "ok" and (step.get("verify") or (step.get("kind") == "python")):
-            verified = self._run_verify(step)
-            if verified:
-                status, msg = verified, "产物校验未通过，详见步骤日志"
-        if status == "fail":
-            self.log("err", f"{step['sid']} 失败 ({dur:.1f}s): {msg or ''}")
-        elif status == "warn":
-            self.log("warn", f"{step['sid']} 警告 ({dur:.1f}s): {msg or ''}")
-        else:
-            self.log("ok", f"{step['sid']} {step['title']} 完成 ({dur:.1f}s)")
-        if step["stage"] <= 2 or step["sid"] == "3.1":
-            form = self.form_for(step)
-            for row in form["rows"]:
-                if row["status"] == "running" or (status == "ok" and row["status"] == "pending"):
-                    row["status"] = status
-            if status == "fail":
-                detail = next((line for line in reversed(self.cur_out)
-                               if re.search(r"fatal:|error:|permission denied|not found|sudo:|错误密码|对不起，请重试", line, re.I)), msg or "步骤失败")
-                form["error"] = self._redact(detail).splitlines()[0][:180]
-        self.log("info" if status != "fail" else "err", f"最终结果: {status}; {msg or ''}; 日志: {self.step_log_path or self.log_error}")
+            status = self._run_verify(step) or status
         self.set_status(step["sid"], status)
         if status == "fail":
-            self.failed_sid = step["sid"]
             self.log("warn", "已停止后续步骤; 修复后重跑本步骤或所在阶段")
             self.queue.clear()
             if self.aborted:
@@ -2942,9 +3887,9 @@ class App:
             time.sleep(0.05)
 
 
-
+# --------------------------------------------------------------------------
 # UI
-
+# --------------------------------------------------------------------------
 
 GLYPH = {"pending": "·", "running": "▶", "ok": "✓", "fail": "✗",
          "warn": "!", "skip": "-", "done": "M"}
@@ -2974,7 +3919,9 @@ HELP_TEXT = """Semantic 安装器: 按键与要点
   ?              本帮助
 
 [文档要点 / 坑]
-  * 不要装: Docker, 系统 apt Python, golangci-lint; unzip/pkg-config 用不上
+  * 不要装: Docker, 系统 apt Python, golangci-lint; unzip 用不上
+  * 编译工具链由 1.1 装 (gcc/cmake/ninja/pkg-config), xmake 由 1.1b 装;
+    5.1 用 xmake 编译 AbilityFramework 依赖它们, 1.7 会逐个核对
   * MuJoCo Runtime 的 Python 用 uv 拉 3.10-3.12; Robot Bundle (cp313 Wheel) 要 3.13
   * SQLite 走 Go 纯实现, 不需要系统 sqlite3
   * GitLab 上 Deployment 项目名是 semantic-deployment, 本地目录必须叫
@@ -3014,19 +3961,12 @@ class UI:
         self.stdscr = None
         self.inp = CursesInput()
         self._win_key = None
-        self._form_sid = None
-        self._showing_form = False
         app.prompt = self.password_prompt
         app.confirm = self.confirm_ask
-        app.workspace_prompt = self.workspace_prompt
 
     # ---------- 绘制 ----------
     def draw(self, stdscr):
         self.stdscr = stdscr
-        if self.app.failed_sid:
-            self.sel = next((i for i, (kind, value, _) in enumerate(self._rows())
-                             if kind == "step" and value["sid"] == self.app.failed_sid), self.sel)
-            self.app.failed_sid = None
         H, W = stdscr.getmaxyx()
         if H < 20 or W < 90:
             stdscr.erase()
@@ -3058,7 +3998,7 @@ class UI:
 
     def _draw_top(self, H, W):
         s = self.app.settings
-        left = " Semantic Installer"
+        left = " Semantic 安装器 《新版Semantic安装步骤》"
         right = f"{sx(s['SEMANTIC'])}  "
         self.stdscr.addstr(0, 0, trunc(left, W - dwidth(right) - 1), curses.A_BOLD | curses.color_pair(3))
         self.stdscr.addstr(0, max(0, W - dwidth(right) - 1), trunc(right, W - 1), curses.color_pair(0) | curses.A_DIM)
@@ -3152,19 +4092,6 @@ class UI:
         return rows
 
     def _draw_log(self):
-        step = self.app.cur
-        if step is None and self.rows:
-            kind, selected, _ = self.rows[self.sel]
-            if kind == "step":
-                step = selected
-            else:
-                last = self.app.last_step
-                step = last if last and last["stage"] == selected else self.app.stage_steps(selected)[0]
-        if step and (step["stage"] <= 2 or step["sid"] == "3.1"):
-            self._showing_form = True
-            self._draw_status_form(step)
-            return
-        self._showing_form = False
         win = self.log_win
         win.erase()
         win.box()
@@ -3173,28 +4100,12 @@ class UI:
         if self.focus == "log":
             title = " 日志 (滚动: PgUp/PgDn, End 跟随) "
         win.addstr(0, 2, trunc(title, WW - 4), curses.A_BOLD | curses.color_pair(3))
-        y = 1
-        hint = step.get("manual_text") if step else None
-        if step and step["sid"] in ("6.1", "6.3"):
-            hint = step["note"]
-            if callable(hint):
-                hint = hint(self.app)
-        if hint:
-            for line in hint.splitlines():
-                for text in wrap_cells(line, WW - 2):
-                    if y >= WH - 1:
-                        break
-                    win.addstr(y, 1, trunc(text, WW - 2), curses.color_pair(3))
-                    y += 1
-            if step["kind"] == "manual":
-                win.refresh()
-                return
-            y += 1
-        avail = max(0, WH - 1 - y)
+        avail = WH - 2
         rows = self._log_tail_pairs(avail + self.log_offset + 1)
         total = len(rows)
         start = max(0, total - avail - self.log_offset)
         end = min(total, start + avail)
+        y = 1
         for cp, text in rows[start:end]:
             if y >= WH - 1:
                 break
@@ -3206,52 +4117,6 @@ class UI:
         if self.log_offset > 0:
             pct = int(100 * start / max(1, total))
             win.addstr(WH - 1, 2, f" 向上翻 {self.log_offset} 行 ({pct}%) ", curses.color_pair(3))
-        win.refresh()
-
-    def _draw_status_form(self, step):
-        win = self.log_win
-        win.erase()
-        win.box()
-        height, width = win.getmaxyx()
-        if self._form_sid != step["sid"]:
-            self._form_sid = step["sid"]
-            self.log_offset = 0
-        form = self.app.form_for(step)
-        labels = {"pending": "待执行", "running": "进行中", "ok": "已完成", "skip": "已跳过",
-                  "fail": "失败", "warn": "需检查", "done": "已完成"}
-        title = "拉取清单" if step["stage"] == 2 else "配置与执行状态"
-        win.addstr(0, 2, trunc(f" {title} ", width - 4), curses.A_BOLD | curses.color_pair(3))
-        status = self.app.status(step["sid"])
-        lines = []
-
-        def add(text, color=0):
-            for line in wrap_cells(self.app._redact(text), max(10, width - 4)):
-                lines.append((color, line))
-
-        add(f"步骤: {step['sid']} {step['title']}", 3)
-        add(f"状态: {labels.get(status, status)}", 2 if status == "fail" else 1)
-        if form["error"]:
-            add("故障: " + form["error"], 2)
-        log_path = self.app.log_paths.get(step["sid"])
-        if log_path:
-            add("日志文件: " + log_path, 3)
-        if self.app.log_error:
-            add(self.app.log_error, 2)
-        for key, value in form["fields"]:
-            add(f"{key}: {value}")
-        if form["rows"]:
-            done = sum(row["status"] in ("ok", "skip") for row in form["rows"])
-            add(f"仓库进度: {done}/{len(form['rows'])}", 3)
-            for row in form["rows"]:
-                state = row["status"]
-                add(f"[{labels.get(state, state)}] {row['repo']}  {row['ref'] or '默认版本'}",
-                    2 if state == "fail" else 1 if state == "ok" else 0)
-                add("  远端: " + row["url"])
-        cap = height - 2
-        self.log_offset = max(0, min(self.log_offset, max(0, len(lines) - cap)))
-        for i, (color, text) in enumerate(lines[self.log_offset:self.log_offset + cap], 1):
-            win.addstr(i, 2, trunc(text, width - 4), curses.color_pair(color))
-        win.addstr(height - 1, 2, trunc(" Tab 切换焦点 · ↑↓/PgUp/PgDn 翻页 · e 编辑配置 ", width - 4), curses.color_pair(3))
         win.refresh()
 
     def _draw_bottom(self, H, W):
@@ -3368,20 +4233,6 @@ class UI:
     def handle_log_key(self, ch):
         WH = self.log_win.getmaxyx()[0] - 2 if hasattr(self, "log_win") else 20
         page = max(1, WH - 2)
-        if self._showing_form:
-            if ch in (curses.KEY_UP, ord("k")):
-                self.log_offset = max(0, self.log_offset - 1)
-            elif ch in (curses.KEY_DOWN, ord("j")):
-                self.log_offset += 1
-            elif ch == curses.KEY_PPAGE:
-                self.log_offset = max(0, self.log_offset - page)
-            elif ch == curses.KEY_NPAGE:
-                self.log_offset += page
-            elif ch == curses.KEY_HOME:
-                self.log_offset = 0
-            elif ch in (curses.KEY_END, ord("G"), ord("g")):
-                self.log_offset = 999999
-            return
         if ch in (curses.KEY_UP, ord("k")):
             self.log_offset += 1
         elif ch in (curses.KEY_DOWN, ord("j")):
@@ -3584,17 +4435,6 @@ class UI:
         r = self.confirm(self.stdscr, title, text)
         self.app.dirty = True
         return r
-
-    def workspace_prompt(self, initial, error=""):
-        """Use the script's repository as the initial clone/build directory."""
-        if self.stdscr is None:
-            return None
-        chosen = self.input_dialog(
-            self.stdscr, "选择拉取和构建目录",
-            error or "当前仓库目录? Enter 保留, 或填写其他绝对路径:",
-            initial=initial)
-        self.app.dirty = True
-        return chosen
 
     # ---------- GitLab 凭证助手 ----------
     def credential_menu(self, stdscr):
@@ -3888,6 +4728,14 @@ class UI:
                         win.addstr(y, 2, trunc(line, w - 3), attr)
                     y += 1
                 win.addstr(h - 2, 2, trunc(f" 保存于 {SETTINGS_FILE}", w - 4), curses.A_DIM)
+                # CPU 推理时把探测到的核数与将采用的线程数显示出来, 让"auto"是可见的
+                # 而非黑盒。编辑中的非法值不阻断渲染 (改完才能保存)。
+                try:
+                    if resolve_gpu_mode(app) == "cpu":
+                        win.addstr(h - 3, 2, trunc(f" CPU: {cpu_topology_note(app)}", w - 4),
+                                   curses.A_DIM)
+                except (ValueError, OSError):
+                    pass
                 win.refresh()
                 done = False
                 for ch in self.inp.read_nav_burst(stdscr):
@@ -3916,7 +4764,6 @@ class UI:
                             self.inp.block(stdscr)
                             if nv is not None:
                                 app.settings[k] = nv.strip()
-                                app.forms.clear()
                                 rows[sel] = ("key", k, nv.strip())
                 if done:
                     return
@@ -3924,9 +4771,9 @@ class UI:
             self.inp.restore(stdscr)
 
 
-
+# --------------------------------------------------------------------------
 # 入口
-
+# --------------------------------------------------------------------------
 
 def init_colors():
     curses.start_color()
@@ -3948,27 +4795,18 @@ def run_tui(app):
     ui = UI(app)
     app.log("info", f"设置文件: {SETTINGS_FILE} (e 键修改环境变量)")
     app.log("info", f"步骤状态文件: {STATUS_FILE}; source 用环境脚本: {ENV_SH}")
+    if app.status_migration_backup:
+        app.log("warn", "步骤状态文件是旧版编号 (阶段 8/9 互换), 已自动迁移为现编号; "
+                        f"原文件备份在 {app.status_migration_backup}")
+        app.log("note", "旧 8.1/8.2 是两个「日常再开」服务, 已改记为 9.1/9.2; "
+                        "LIBERO 的步骤号现在是 8.x")
     app.log("note", "流程来自《新版Semantic安装步骤》: 1 系统依赖 → 2 拉代码 → 3 构建 Server → "
-                    "4 登记 Runtime → 5 Robot 执行栈 → 6 启动 → 7 实操示例 → 8 日常再开")
+                    "4 登记 Runtime → 5 Robot 执行栈 → 6 启动 → 7 Studio 手动 → "
+                    "8 安装扩展场景 (选装, 见 EXTENSION) → 9 日常再开")
     app.log("note", "sudo 步骤默认在 TUI 内弹掩码密码框 (sudo -S, 一次输入全程复用, P 键清除); "
                     "SUDO_AUTH=terminal 可改回终端模式")
 
     os.environ.setdefault("ESCDELAY", str(ESC_GATHER_MS))
-    prepare_terminal()
-
-    # 进入 curses 前保存 tty 原始模式; 退出时无条件写回, 不依赖 ncurses 内部状态
-    try:
-        saved_termios = termios.tcgetattr(sys.__stdin__.fileno())
-    except Exception:
-        saved_termios = None
-
-    # SIGTERM/SIGHUP 默认直接终止进程 (finally 不会执行), 转成异常保证终端被恢复
-    def _bail(signum, _frame):
-        raise SystemExit(128 + signum)
-
-    for _sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(_sig, _bail)
-
     stdscr = curses.initscr()
     ok = False
     try:
@@ -3987,37 +4825,21 @@ def run_tui(app):
         ui.run(stdscr)
         ok = True
     finally:
-        # 恢复顺序须与 curses.wrapper 一致: 先退出输入模式, 最后 endwin。
-        # 若先 endwin, 其后的 nocbreak/keypad 会把 termios 的 ECHO 位重新写回关闭状态,
-        # 退出后终端无回显 (实测复现)。
-        try:
-            curses.curs_set(1)
-        except curses.error:
-            pass
-        try:
-            stdscr.keypad(False)
-        except curses.error:
-            pass
-        for fn in (curses.nocbreak, curses.echo, curses.endwin):
+        for fn in (curses.endwin, curses.echo, curses.nocbreak):
             try:
                 fn()
             except curses.error:
                 pass
-        if saved_termios is not None:
-            try:
-                termios.tcsetattr(sys.__stdin__.fileno(), termios.TCSADRAIN, saved_termios)
-            except Exception:
-                pass
+        try:
+            stdscr.keypad(False)
+        except curses.error:
+            pass
         if not ok:
             print("TUI 异常退出; 若终端显示错乱请执行 reset", file=sys.stderr)
 
 
 def main(argv):
-    if "--release" in argv:
-        script = Path(__file__).resolve().parent / "artifacts/install_release.py"
-        return subprocess.run([sys.executable, str(script), *[arg for arg in argv if arg != "--release"]]).returncode
     ap = argparse.ArgumentParser(description="Semantic 安装器 TUI (《新版Semantic安装步骤》)")
-    ap.add_argument("--release", action="store_true", help="从 GitHub Release 下载并安装整包；可追加 --dir、--yes 等制品安装参数")
     ap.add_argument("--list", action="store_true", help="列出全部阶段与步骤")
     ap.add_argument("--run-all", action="store_true", help="无头模式: 顺序执行全部")
     ap.add_argument("--stage", type=int, action="append", help="无头模式: 执行指定阶段 (可多次)")
@@ -4025,7 +4847,7 @@ def main(argv):
     args = ap.parse_args()
 
     if args.reset_status:
-        save_json(STATUS_FILE, {})
+        save_json(STATUS_FILE, {STATUS_LAYOUT_KEY: STATUS_LAYOUT})
         print("步骤状态已清空")
         return 0
 

@@ -42,6 +42,7 @@ sys.dont_write_bytecode = True  # Imports must not mutate the hash-verified payl
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from install_support import COMPONENT_DEFAULTS, component_values, read_component_config, validate_components, component_yaml, export_components
 from install_support import Progress, desktop_shortcuts, welcome, web_host, web_probe, urls, settings_form
+import extension
 
 INSTALL_LOG = None
 PROGRESS = None
@@ -750,7 +751,7 @@ def install_manager(root, payload):
         if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
             raise ValueError('管理目录异常: '+str(directory))
         directory.mkdir(exist_ok=True, mode=0o700)
-    for name in ('installer.py', 'install_support.py', 'uninstall.py', 'assets/ios.png', 'assets/banner.json'):
+    for name in ('installer.py', 'install_support.py', 'extension.py', 'uninstall.py', 'assets/ios.png', 'assets/banner.json'):
         target = manager/name
         if target.is_symlink() or (target.exists() and target.stat().st_nlink != 1):
             raise ValueError('管理文件链接异常: '+str(target))
@@ -969,7 +970,11 @@ def main():
     p.add_argument('--yes', action='store_true', help='uninstall: 跳过确认')
     p.add_argument('--purge', action='store_true', help='uninstall: 删除全部实例数据')
     p.add_argument('--dry-run', action='store_true', help='uninstall: 只显示计划')
+    extension.register(commands)
     a = parser.parse_args()
+    handler = getattr(a, 'extension', None)
+    if handler:
+        sys.exit(handler(a))
     if a.command == 'control' and a.action not in ('uninstall', 'reconfigure') and (a.yes or a.purge or a.dry_run):
         parser.error('--yes/--purge/--dry-run 仅用于 uninstall')
     if a.command == 'export-config' or (a.command == 'control' and a.action == 'export-config'):

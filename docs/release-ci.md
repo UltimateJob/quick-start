@@ -67,3 +67,9 @@ gh workflow run musl-release.yml --ref musl-vMAJOR.MINOR.PATCH-REVISION
 Published assets and tags are immutable. For an already published version, use its
 existing release; a changed package requires a new tag. To mirror verified releases
 to OSS, see [the four-platform mirror commands](../artifacts/site/README.md#reproduce-an-oss-release-mirror).
+
+## 扩展场景
+
+预编译入口目前只装基础环境。扩展场景（LIBERO，以及后续 Isaac）的旁挂设计与实施路径见
+[扩展场景的安装设计](extensions.md)：独立清单 + `semanticctl extension` 子命令 + 独立通道，
+基础制品保持精简与不可变。

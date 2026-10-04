@@ -2,70 +2,57 @@
   "version": 1,
   "repos": {
     "semantic-framework": {
-      "url": "https://github.com/insightos-community/Semantic-Framework.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "81ea016480f099f9db95bd48c083ee99d8806a4d"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-web": {
-      "url": "https://github.com/insightos-community/semantic-web.git",
-      "ref": "v0.5.0-insightos.2026.3",
-      "commit": "4e0d741de941d81ffba0f0c6701ff135d346a758"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-docs": {
-      "url": "https://github.com/insightos-community/semantic-docs.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "7544152d4fea8bcf06dfb11d89f642455a7e2742"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-ability/r1pro-ability": {
-      "url": "https://github.com/insightos-community/r1pro-ability.git",
-      "ref": "v0.4.0-insightos.2026.2",
-      "commit": "76e670f0cb8874b12fadbeb9acc9a88da7fb9b9c"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-robotsdk/robot-sdk": {
-      "url": "https://github.com/insightos-community/robot-sdk.git",
-      "ref": "v0.4.0-insightos.2026.2",
-      "commit": "59a1a8364c3d0330f1802c020e37544e0dbfa7c5"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-skill/robot-skill": {
-      "url": "https://github.com/insightos-community/robot-skill.git",
-      "ref": "v0.4.0-insightos.2026.2",
-      "commit": "660345e5ff7c0985d7b317a192dcc0b13fc6ea8c"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-simulation/mujoco-runtime": {
-      "url": "https://github.com/insightos-community/mujoco-runtime.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "03513d48fc6427d3205d63cd29a80ab8dc16b554"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-scene/mujoco-asset": {
-      "url": "https://github.com/insightos-community/mujoco-asset.git",
-      "ref": "v0.4.0-insightos.2026.3",
-      "commit": "f9855e6dd1419f890b418a9f398bd1d5ec49b57c"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-robot-deployment": {
-      "url": "https://github.com/insightos-community/semantic-deployment.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "70c4a025c5995f8ad7b8770718b73932ef57febf"
+      "ref": "develop",
+      "commit": ""
     },
     "semantic-ability/ability-runtime": {
-      "url": "https://github.com/insightos-community/ability-runtime.git",
-      "ref": "v0.4.0-insightos.2026.2",
-      "commit": "f3dad56a28f177421fd56cca8d593e1f29fc0b49"
+      "ref": "develop",
+      "commit": ""
     },
     "ability-framework/abilityframework": {
-      "url": "https://github.com/insightos-community/AbilityFramework.git",
-      "ref": "v2.4.1-insightos.2026.2",
-      "commit": "d2dfd22410437f7fdbf72f247847e8fcab420ed9"
+      "ref": "d14131a",
+      "commit": ""
     },
     "ability-framework/ability-py-sdk": {
-      "url": "https://github.com/insightos-community/Ability-SDK-Python.git",
-      "ref": "v0.4.0-insightos.2026.2",
-      "commit": "3a90b6d94ea6babb890ffcd285ba55e5fef6fc8c"
+      "ref": "v0.4.0",
+      "commit": ""
     },
     "ability-framework/ability-scaffold": {
-      "url": "https://github.com/insightos-community/ability-scaffold.git",
-      "ref": "v1.2.0-insightos.2026.2",
-      "commit": "f85b9cce4f0040671fa74ebf0a587b7e4c65a7df"
+      "ref": "main",
+      "commit": ""
     }
   },
-  "updated": "2026-09-10 17:56:31"
+  "updated": "2026-09-09 17:04:34"
 }
