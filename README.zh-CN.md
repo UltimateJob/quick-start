@@ -112,6 +112,45 @@ python3 semantic_installer.py --list
 
 根目录安装脚本位于当前 `main`，已有 `v0.1.0` 源码 Tag 保持不变。源码构建下载模型后仍需完成 Bundle 激活与 Skill 发布。
 
+### 安装扩展场景（LIBERO / BEHAVIOR）
+
+上面的基础安装只准备基础工作区。仿真场景是**独立发布、旁挂于不可变基础制品之外**的产物，由安装器在基础环境装好之后按需拉取。目前有两个场景：
+
+| 场景 | `--extension` | 内容 |
+|---|---|---|
+| LIBERO | `libero` | robosuite 1.4 + Franka + SmolVLA；六个产物合计约 11.5 GB |
+| BEHAVIOR（Isaac Sim） | `isaac` | OmniGibson 3.9.2 + R1 Pro + π0.5；六个产物合计约 99 MB（最大约 52 MB），另需 31 GB 引擎镜像与自行取得的授权数据集 |
+
+在同一个入口脚本上加 `--extension <id>`，基础环境装完后自动继续：
+
+```bash
+# LIBERO
+curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
+  --extension libero --extension-project <项目ID> --install-system-deps
+
+# BEHAVIOR（Isaac）
+curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
+  --extension isaac --extension-source github --extension-project <项目ID> \
+  --extension-asset-root /数据集上一级目录 --install-system-deps
+```
+
+参数说明：
+
+- `--extension-source oss|github` 选通道（默认 `oss`）。清单与版本指针统一从 OSS 取，GitHub Release 镜像产物；LIBERO 有三个产物超过 GitHub 单个资产 2 GiB 上限，会**自动回退 OSS**，因此 LIBERO 走 GitHub 通道时离线不可用。
+- `--extension-base-url <URL>` 换通道；`--extension-package-dir <目录>` 用「六个产物 + 清单」完全离线安装；`--extension-manifest <文件>` 用本地清单。
+- `--extension-project <ID>` 指定目标 Project（缺省用当前用户的默认项目）；组件声明 `robot_required` 时可传 `--extension-robot <ID>`。
+- `--extension-asset-root <绝对路径>` 是 BEHAVIOR Runtime 的硬要求：宿主绝对路径，其上一级目录需含 `2026-challenge-task-instances/`。
+- 扩展 Runtime 包声明的 `license` 由清单自动带上，也可显式传 `--accept-license LIBERO` / `--accept-license behavior-assets`。
+- 安装顺序固定：Runtime → 场景 → 运行支持 → Ability → 模型 → Skill；`--extension-dry-run` 只打印命令计划、不改动现场。
+
+有些前提装不进来，安装器会探测并提示（探测失败只告警、不阻断）：
+
+- BEHAVIOR 需要本地 Docker 已导入 `behavior:v3.9.2` 引擎镜像（31.1 GB）、授权数据集、LLM 密钥，以及在机器人四件套之前启动的 π0.5 策略服务（端口 20080）；需要独显，预览至少 6144 MiB 空闲显存。
+- 端口：BEHAVIOR 用 Runtime `18090`、Ability `18100-18199`、策略服务 `20080`；LIBERO 用 `18100-18199`，同机并存要分配不同端口段。
+- 装完要到 Web「场景配置 → 添加兼容场景」，并把 Ability 与模型绑定到机器人——安装只把场景注册到场景目录。
+
+安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.md)，各场景说明见 [`extensions/libero`](extensions/libero/README.md) 与 [`extensions/isaac`](extensions/isaac/README.md)；源码编译路径见 TUI 阶段 8。
+
 ## 🛠 源码构建
 
 步骤 2.3 的场景资产仍通过 Git LFS 拉取；第三方 Wheel 优先复用已校验的本地缓存，
