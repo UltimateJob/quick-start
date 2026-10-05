@@ -23,6 +23,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,6 +127,15 @@ class BackfillTests(ReleaseCase):
 
 
 class StageTests(ReleaseCase):
+    def setUp(self):
+        super().setUp()
+        # install() provisions CLI credentials from the instance's Server; stand in
+        # a session so the offline staging tests never touch the network.
+        session = patch.object(extension, 'server_session',
+                               return_value=(self.root/'home', 'http://127.0.0.1:8034', 'tok'))
+        session.start()
+        self.addCleanup(session.stop)
+
     def test_stage_writes_the_tree_and_pointer(self):
         folder = self.build_staged()
         self.assertTrue((folder/'extension.json').is_file())

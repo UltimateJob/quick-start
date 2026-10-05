@@ -471,8 +471,11 @@ class PlanTests(unittest.TestCase):
         self.assertIn('--scene', scene)
         skill = next(command for name, command in plan if 'vla-manipulation' in name)
         self.assertEqual(skill[-2:], ['--robot', 'robot_r1'])
-        with self.assertRaisesRegex(extension.ManifestError, '--robot'):
-            extension.plan_commands(parsed, paths, 'semantic', 'cfg', project='proj')
+        # Without a Robot the Skill is imported only; Studio binds it later.
+        unbound = extension.plan_commands(parsed, paths, 'semantic', 'cfg', project='proj')
+        self.assertNotIn('--robot', next(command for name, command in unbound if 'vla-manipulation' in name))
+        self.assertEqual(extension.unbound_skills(parsed, None), ['robot_skill/vla-manipulation'])
+        self.assertEqual(extension.unbound_skills(parsed, 'robot_r1'), [])
 
     def test_components_install_after_the_runtime(self):
         parsed = extension.parse(manifest())
@@ -511,6 +514,12 @@ class OfflineInstallTests(unittest.TestCase):
         for name, body in bodies.items():
             (self.pkg/name).write_bytes(body)
         self.parsed = extension.parse(json.dumps(value))
+        # install() now provisions CLI credentials from the instance's Server; unit
+        # tests stand in a session so nothing touches the network.
+        session = patch.object(extension, 'server_session',
+                               return_value=(self.pkg/'home', 'http://127.0.0.1:8034', 'tok'))
+        session.start()
+        self.addCleanup(session.stop)
 
     def test_offline_install_verifies_then_runs_every_command(self):
         ran, rows = [], []
@@ -788,6 +797,70 @@ class InstallerChannelWiringTests(unittest.TestCase):
                 self.assertIn('--extension-source', text)
                 self.assertIn("choices=['oss', 'github']", text)
                 self.assertIn("source = getattr(a, 'extension_source', None) or 'oss'", text)
+
+    def test_generated_installer_launcher_forwards_extension(self):
+        """``semanticctl extension ...`` must reach the top-level extension command."""
+        for name in ('install.sh', 'install-en.sh'):
+            text = (ROOT/name).read_text()
+            with self.subTest(name=name):
+                self.assertIn('extension "$@" --root', text)
+
+
+class SessionTests(unittest.TestCase):
+    """The component install needs CLI credentials a fresh instance never creates."""
+
+    def test_server_session_writes_isolated_cli_credentials(self):
+        directory = __import__('tempfile').mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, ignore_errors=True)
+        root = Path(directory)
+        (root/'install.json').write_text(json.dumps({'http_port': 8034}))
+        (root/'configs').mkdir()
+        (root/'configs/secrets.json').write_text(json.dumps({'SEMANTIC_ADMIN_PASSWORD': 'pw'}))
+        with patch.object(extension, 'http_json',
+                          return_value={'token': 'tok', 'expires_at': '2030-01-01T00:00:00Z'}):
+            home, server, token = extension.server_session(root)
+        self.assertEqual((server, token), ('http://127.0.0.1:8034', 'tok'))
+        creds = json.loads((home/'.semantic'/'credentials.json').read_text())
+        self.assertEqual(creds['server'], 'http://127.0.0.1:8034')
+        self.assertEqual(creds['token'], 'tok')
+        self.assertEqual(oct((home/'.semantic'/'credentials.json').stat().st_mode & 0o777), '0o600')
+
+    def test_default_project_prefers_the_signed_in_users_default(self):
+        with patch.object(extension, 'http_json', return_value={'projects': [
+                {'id': 'proj-x', 'mode': 'development'},
+                {'id': 'proj-default-usr_1', 'is_default': True}]}):
+            self.assertEqual(extension.default_project('http://s', 'tok'), 'proj-default-usr_1')
+
+    def test_cli_environment_reports_the_resolved_default_project(self):
+        rows = []
+        with patch.object(extension, 'server_session', return_value=(Path('/tmp/h'), 'http://s', 't')), \
+             patch.object(extension, 'default_project', return_value='proj-default-usr_1'):
+            project, env = extension.cli_environment('/root', None, False, lambda *row: rows.append(row))
+        self.assertEqual(project, 'proj-default-usr_1')
+        self.assertEqual(env['HOME'], '/tmp/h')
+        self.assertTrue(any('默认项目' in str(row) for row in rows))
+
+    def test_dry_run_keeps_an_unset_project_without_network(self):
+        with patch.object(extension, 'server_session', side_effect=AssertionError('dry run must not log in')):
+            project, env = extension.cli_environment('/root', None, True, lambda *row: None)
+        self.assertEqual(project, '<project-id>')
+        self.assertIsNone(env)
+
+
+class ListCatalogTests(unittest.TestCase):
+    """``list`` must work even when the channel publishes no ``index.json``."""
+
+    def test_index_is_used_when_present(self):
+        with patch.object(extension, 'http_json',
+                          return_value={'libero': {'version': '0.1.0', 'title': 'LIBERO'}}):
+            self.assertEqual(extension.list_catalog('https://oss.invalid'),
+                             [('libero', 'LIBERO', '0.1.0')])
+
+    def test_missing_index_falls_back_to_the_builtin_registry(self):
+        with patch.object(extension, 'http_json', side_effect=OSError('no index')), \
+             patch.object(extension, 'stable_pointer', return_value='0.1.0'):
+            self.assertEqual([row[0] for row in extension.list_catalog('https://oss.invalid')],
+                             list(extension.KNOWN_EXTENSIONS))
 
 
 if __name__ == '__main__':

@@ -117,10 +117,12 @@ The root shell scripts are available on current `main`; the existing `v0.1.0` so
 
 The base installation above prepares the workspace. Simulation scenes are optional side payloads published separately from the immutable base release; the installer pulls them after the base environment is ready. Two scenarios are available:
 
-| Scenario | `--extension` | Contents |
-|---|---|---|
-| LIBERO | `libero` | robosuite 1.4, Franka and SmolVLA; six artifacts, about 11.5 GB in total |
-| BEHAVIOR (Isaac Sim) | `isaac` | OmniGibson 3.9.2, R1 Pro and π0.5; six artifacts, about 99 MB in total (largest about 52 MB), plus a 31 GB engine image and the licensed dataset you provide |
+| Scenario | `--extension` | Contents | User manual |
+|---|---|---|---|
+| LIBERO | `libero` | robosuite 1.4, Franka and SmolVLA; six artifacts, about 11.5 GB in total | [extensions/libero](extensions/libero/README.md) |
+| BEHAVIOR (Isaac Sim) | `isaac` | OmniGibson 3.9.2, R1 Pro and π0.5; six artifacts, about 99 MB in total (largest about 52 MB), plus a 31 GB engine image and the licensed dataset you provide | [extensions/isaac](extensions/isaac/README.md) |
+
+Each scenario has a **user manual** that follows one path: environment preparation → install into the framework → reproduce in the web Studio (with red-boxed screenshots). The entry point and directory convention are in **[`extensions/README.md`](extensions/README.md)**.
 
 Pass `--extension <id>` to the same entry script; it runs once the base environment finishes:
 
@@ -146,11 +148,11 @@ Options:
 
 Some prerequisites cannot be shipped and are reported by the installer; probes warn but never block:
 
-- BEHAVIOR needs the `behavior:v3.9.2` engine image in the local Docker store (31.1 GB), the licensed dataset, an LLM key, and a π0.5 policy service on port 20080 started before the robot components. A discrete GPU is required; previews need at least 6144 MiB free.
+- BEHAVIOR needs the `behavior:v3.9.2` engine image in the local Docker store (31.1 GB), the licensed dataset, an LLM key, and a π0.5 policy service on port 20080 started before the robot components. A discrete GPU is required; previews need at least 6144 MiB free. Full step-by-step preparation (import or build the image, fetch the dataset, serve π0.5) is in section 1 of the [BEHAVIOR user manual](extensions/isaac/README.md).
 - Ports: BEHAVIOR uses runtime 18090, ability 18100–18199 and policy 20080; LIBERO uses 18100–18199, so allocate different ranges when running both on one host.
 - After installation, add the compatible scene in the Web UI and bind the Ability and model to the robot — installing a scene only registers its catalog.
 
-Manage extensions with the installed manager: `semanticctl extension list|show|verify|install|remove`, plus `--source oss|github`. See the [extension scenario design](docs/extensions.md) and the notes under [`extensions/libero`](extensions/libero/README.md) and [`extensions/isaac`](extensions/isaac/README.md). The source-build TUI covers the same scenarios in stage 8.
+Manage extensions with the installed manager: `semanticctl extension list|show|verify|install|remove`, plus `--source oss|github`. See the [extension scenario design](docs/extensions.md), the scenario entry point under [`extensions`](extensions/README.md), and the [LIBERO](extensions/libero/README.md) and [BEHAVIOR](extensions/isaac/README.md) user manuals. The source-build TUI covers the same scenarios in stage 8.
 
 ## 🛠 Build from source
 

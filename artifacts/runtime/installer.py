@@ -809,8 +809,19 @@ def install_manager(root, payload):
     if launcher.is_symlink() or (launcher.exists() and launcher.stat().st_nlink != 1):
         raise ValueError('管理入口链接异常')
     python_command = shlex.quote(str(root/'current/python/bin/python3.13')) if platform.system() == 'Darwin' else 'python3'
-    launcher.write_text('#!/bin/sh\nexec '+python_command+' -B '+shlex.quote(str(manager/'installer.py'))+
-                        ' control --root '+shlex.quote(str(root))+' "$@"\n')
+    manager_script = shlex.quote(str(manager/'installer.py'))
+    instance = shlex.quote(str(root))
+    # ``semanticctl extension ...`` is a top-level command, everything else is a
+    # ``control`` action. Forward ``extension`` straight through so the documented
+    # ``semanticctl extension list|show|verify|install|remove`` actually reaches it.
+    launcher.write_text('#!/bin/sh\n'
+                        'case "$1" in\n'
+                        '  extension)\n'
+                        '    shift\n'
+                        '    exec '+python_command+' -B '+manager_script+' extension "$@" --root '+instance+'\n'
+                        '    ;;\n'
+                        'esac\n'
+                        'exec '+python_command+' -B '+manager_script+' control --root '+instance+' "$@"\n')
     launcher.chmod(0o755)
 
 
