@@ -46,7 +46,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import unicodedata
+import zipfile
 from collections import deque
 from pathlib import Path
 from queue import Empty, Queue
@@ -70,8 +72,23 @@ CPU_SYS_ROOT = "/sys/devices/system/cpu"
 CGROUP_V2_CPU_MAX = "/sys/fs/cgroup/cpu.max"
 CGROUP_V1_QUOTA = "/sys/fs/cgroup/cpu/cpu.cfs_quota_us"
 CGROUP_V1_PERIOD = "/sys/fs/cgroup/cpu/cpu.cfs_period_us"
+REPO_EVENT_MARK = "@@semantic-repo:"
 LOG_LIMIT = 4000
 CMD_MARK = "\u00a7"  # § 标记脚本回显的命令行
+
+ANSI_ESCAPE_RE = re.compile(
+    r"(?:\x1b\]|\x9d)[^\x07\x1b\x9c\r\n]*(?:\x07|\x1b\\|\x9c|(?=\r?\n|$))"
+    r"|(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"
+    r"|\x1b[ -/]*[0-~]"
+)
+
+
+def plain_log_text(text):
+    """保留 Unicode 正文，去除日志中的终端控制码（不模拟终端）。"""
+    text = ANSI_ESCAPE_RE.sub("", str(text))
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
+
 
 DONE_STATES = {"ok", "skip", "warn", "done"}
 STAGE_PREREQ = {6: [1, 2, 3, 4, 5], 7: [1, 2, 3, 4, 5, 6], 8: [1, 2, 3, 4, 6],
@@ -2894,6 +2911,7 @@ def build_steps():
 
     # ---------------- 阶段 2 ----------------
     S("2.1", "克隆全部子仓库",
+      pre=lambda app: app.prepare_clone_workspace(),
       cmds=lambda app: _clone_script(app), cwd=lambda app: sx(app.settings["SEMANTIC"]),
       note="注意: GitLab 项目名是 semantic-deployment, 本地目录必须叫 semantic-robot-deployment (刷新脚本认这个名字)")
 
@@ -2902,13 +2920,11 @@ def build_steps():
       note="优先读取 repo-versions.json 版本清单 (用 repo_versions.py 维护, 支持 branch/tag/commit); "
            "清单缺失时回退到设置里的分支")
 
-    S("2.3", "拉取 Git LFS 资产",
-      cmds=lambda app: [
-          f'cd "{sx(app.settings["SEMANTIC"])}/semantic-scene/mujoco-asset" && git lfs install && git lfs pull && git lfs fsck',
-          f'cd "{sx(app.settings["SEMANTIC"])}/semantic-ability/ability-runtime" '
-          f'&& git lfs pull -X "AbilityFramework,ability_py-*.whl,ability_scaffold-*.whl" && make check',
-      ],
-      note="克隆已跳过 LFS smudge; mujoco-asset 全量拉取, ability-runtime 定向拉取(排除源码编译替代的 AF 二进制与 ability_py/ability_scaffold Wheel, 由 5.1/5.2 源码构建产出)")
+    S("2.3", "准备场景资产与 Wheel",
+      cmds=lambda app: _asset_pull_script(app),
+      env=lambda app: {"UV_DEFAULT_INDEX": app.settings.get("UV_DEFAULT_INDEX", "")},
+      post=lambda app, rc: _check_runtime_assets(app),
+      note="拉取清单: 场景资产、运行时 bundle 配置与第三方 Wheel。")
 
     S("2.4", "目录与资产核对",
       cmds=lambda app: _verify2_script(app),
@@ -3423,34 +3439,50 @@ def self_org_mode():
     return "fork"
 
 
-def _clone_script(app):
+def _repo_plan(app):
     s = app.settings
-    base = sx(s["SEMANTIC"])
     gl = s["GITLAB"]
     root = gitlab_root(gl)
+    mpath, manifest = find_repo_manifest(app)
+    mode = self_org_mode()
+    rows = []
+    for local, repo, brkey in REPOS:
+        if repo.startswith("/"):
+            url = f"{root}{repo}.git"
+            if mode == "upstream" and local in UPSTREAM_REPOS:
+                url = f"{root}{UPSTREAM_REPOS[local]}.git"
+        else:
+            url = f"{gl}/{repo}.git"
+        entry = manifest.get(local, {}) if manifest else {}
+        if isinstance(entry, dict) and isinstance(entry.get("url"), str) and entry["url"].strip():
+            url = sx(entry["url"].strip())
+        ref = entry.get("ref", "") if isinstance(entry, dict) else ""
+        rows.append({"repo": local, "url": url, "ref": ref or (s.get(brkey, "") if brkey else ""),
+                     "status": "pending"})
+    return mpath, rows
+
+
+def _clone_script(app):
+    base = sx(app.settings["SEMANTIC"])
+    _mpath, rows = _repo_plan(app)
     lines = ["set -eo pipefail",
              f'mkdir -p "{base}"',
              'clone_if() { d="$1"; u="$2"; if [ -d "$d/.git" ]; then echo "[跳过] $d 已存在"; '
              'elif [ -e "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ]; then '
              'echo "[错误] $d 已存在且不是 git 仓库，无法克隆。请先移走或删除该目录（可能是上一次安装的残留）" >&2; exit 1; '
              'else echo "[克隆] $d"; GIT_LFS_SKIP_SMUDGE=1 git clone "$u" "$d"; fi; }']
-    for local, repo, _br in REPOS:
+    for row in rows:
+        local, url = row["repo"], row["url"]
         # 功能线专属仓库只在对应扩展启用时克隆: 基础安装不需要它们, 而且它们
         # 可能还没发布到所有通道, 无条件 clone 会把阶段 2 直接拖挂。
         needed = EXTENSION_CLONE_REPOS.get(local)
         if needed and not extension_enabled(app, needed):
             lines.append(f'echo "[跳过] {local}: 仅 EXTENSION={needed} 时克隆"')
             continue
-        parent = os.path.dirname(os.path.join(base, local))
-        if parent:
-            lines.append(f'mkdir -p "{parent}"')
-        if repo.startswith("/"):
-            url = f"{root}{repo}.git"
-            if self_org_mode() == "upstream" and local in UPSTREAM_REPOS:
-                url = f"{root}{UPSTREAM_REPOS[local]}.git"
-        else:
-            url = f"{gl}/{repo}.git"
-        lines.append(f'clone_if "{os.path.join(base, local)}" "{url}"')
+        lines.append(_repo_event(local, "running"))
+        lines.append("mkdir -p " + shlex.quote(os.path.dirname(os.path.join(base, local))))
+        lines.append(f'clone_if {shlex.quote(os.path.join(base, local))} {shlex.quote(url)}')
+        lines.append(_repo_event(local, "ok"))
     return ["\n".join(lines)]
 
 
@@ -3503,6 +3535,7 @@ def _branch_script(app):
             app.log("note", "EXTENSION=isaac: 按内置逐仓表切各仓行为分支 (ISAAC_LINE_BRANCH 留空)")
     lines = [
         "set -eo pipefail",
+        "export GIT_LFS_SKIP_SMUDGE=1",
         "sw() { dir=\"$1\"; ref=\"$2\"; echo \"[版本] $dir -> $ref\"; "
         "git -C \"$dir\" fetch origin --tags --prune 2>&1 | tail -1; "
         "if ! git -C \"$dir\" checkout -q \"$ref\" 2>/dev/null; then "
@@ -3552,6 +3585,7 @@ def _verify2_script(app):
     base = sx(app.settings["SEMANTIC"])
     ar = os.path.join(base, "semantic-ability/ability-runtime")
     cmds = [
+        f'python3 {shlex.quote(os.path.join(base, "semantic-scene/mujoco-asset/check_external_models.py"))}',
         f'ls "{os.path.join(base, "semantic-skill/robot-skill/semantic_robot_skills/skills")}"',
         f'test -d "{os.path.join(ar, "base-bundles/r1pro-mujoco-" + app.settings["BUNDLE_VER"] + "/wheels")}"',
         f'ls "{os.path.join(base, "semantic-robot-deployment/type-packages/r1pro-mujoco")}"',
@@ -3617,6 +3651,65 @@ def _step_prepare_env(app):
     return ("ok", None)
 
 
+def _repo_event(local, status):
+    return "printf '%s\\n' " + shlex.quote(REPO_EVENT_MARK + json.dumps([local, status]))
+
+
+def _asset_pull_script(app):
+    base = sx(app.settings["SEMANTIC"])
+    source = app.settings.get("RUNTIME_WHEEL_SOURCE", "auto")
+    if source not in ("auto", "lfs", "offline"):
+        raise ValueError("RUNTIME_WHEEL_SOURCE 必须为 auto、lfs 或 offline")
+    fetch = " ".join(shlex.quote(str(arg)) for arg in (
+        sys.executable, SCRIPT_DIR / "scripts/fetch_runtime_wheels.py",
+        "--repo", os.path.join(base, "semantic-ability/ability-runtime"), "--source", source))
+    commands = []
+    for local, action in (
+        ("semantic-scene/mujoco-asset", 'git lfs pull -I "" -X ""'),
+        ("semantic-ability/ability-runtime", fetch),
+    ):
+        commands.append("\n".join(["set -e", _repo_event(local, "running"),
+                                   "cd " + shlex.quote(os.path.join(base, local)), action,
+                                   _repo_event(local, "ok")]))
+    return commands
+
+
+def _source_built_asset(path):
+    """Source-built artifacts are excluded at any depth, including bundle caches."""
+    return re.fullmatch(r"AbilityFramework|ability_(?:py|scaffold)-.*\.whl", Path(path).name) is not None
+
+
+def _check_runtime_assets(app):
+    """Check only downloaded third-party assets; source outputs are checked in stage 5."""
+    vendor = Path(_vendor_root(app))
+    bundle = vendor / "base-bundles" / f"r1pro-mujoco-{app.settings['BUNDLE_VER']}"
+    if not (bundle / "bundle.yaml").is_file() or not (bundle / "wheels").is_dir():
+        return ("fail", f"第三方资产缺失: {bundle}/bundle.yaml 或 wheels/")
+    rc, out = _run_quick(["git", "-C", str(vendor), "-c", "core.quotePath=false",
+                          "lfs", "ls-files", "--name-only"], timeout=60)
+    if rc != 0:
+        return ("fail", f"无法列出 ability-runtime LFS 资产: {out}")
+    checked = 0
+    missing = []
+    for name in out.splitlines():
+        if not name or _source_built_asset(name):
+            continue
+        try:
+            with (vendor / name).open("rb") as f:
+                content = f.read(128)
+            if not content or content.startswith(b"version https://git-lfs.github.com/spec/v1"):
+                missing.append(name)
+            else:
+                checked += 1
+        except OSError:
+            missing.append(name)
+    if missing:
+        return ("fail", "第三方 LFS 资产未下载或不可读: " + ", ".join(missing[:5]))
+    app.log("ok", f"ability-runtime 第三方资产齐全 ({checked} 个 LFS 文件); "
+                  "AbilityFramework / ability_py / ability_scaffold 留待阶段 5 源码构建")
+    return None
+
+
 def _vendor_root(app):
     return sx(app.settings["SEMANTIC"]) + "/semantic-ability/ability-runtime"
 
@@ -3648,10 +3741,11 @@ def _install_af(app, repo, vendor):
         if "AbilityFramework" in files:
             cands.append(os.path.join(root, "AbilityFramework"))
     if not cands:
-        app.log("err", "未在 build/ 下找到 AbilityFramework 编译产物")
-        return None
+        return ("fail", "未在 build/ 下找到 AbilityFramework 编译产物")
     src_bin = max(cands, key=os.path.getmtime)
     rc, out = _run_quick([src_bin, "--version"], timeout=30)
+    if rc != 0:
+        return ("fail", f"AbilityFramework 编译产物无法执行: {src_bin}: {out.strip()}")
     ver = out.strip().splitlines()[0] if out.strip() else "(无版本输出)"
     app.log("info", f"编译产物: {src_bin} | {ver}")
     # 就绪契约守卫: robot instance supervisor 用 GET /api/instance 判就绪 (WaitReady),
@@ -3682,10 +3776,11 @@ def _install_af(app, repo, vendor):
         shutil.copy2(src_bin, dst)
         os.chmod(dst, 0o755)
     except Exception as e:
-        app.log("err", f"安装失败: {e}")
-        return None
+        return ("fail", f"AbilityFramework 安装失败: {e}")
     rc2, out2 = _run_quick([dst, "--version"], timeout=30)
-    app.log("ok" if rc2 == 0 else "warn", f"已安装到 {dst}: {out2.strip().splitlines()[0] if out2.strip() else ver}")
+    if rc2 != 0:
+        return ("fail", f"安装后的 AbilityFramework 无法执行: {dst}: {out2.strip()}")
+    app.log("ok", f"已安装到 {dst}: {out2.strip().splitlines()[0] if out2.strip() else ver}")
     return None
 
 
@@ -3709,9 +3804,22 @@ def _step_build_ability_py(app):
     return ("shell", {"cmds": cmds, "cwd": repos["ability_py"],
                       "env": {"PATH": _path_with_tools(app),
                               "UV_DEFAULT_INDEX": app.settings["UV_DEFAULT_INDEX"]},
-                      "post": lambda app2, rc: _install_ability_wheels(app2, repos, vendor, cache) and None,
+                      "post": lambda app2, rc: _install_ability_wheels(app2, repos, vendor, cache),
                       "verify": [f'test -f "{vendor}/ability_py-0.4.0-py3-none-any.whl"',
                                  f'test -f "{vendor}/ability_scaffold-1.2.0-py3-none-any.whl"']})
+
+
+def _check_built_wheel(path):
+    """拒绝 LFS 指针、损坏的压缩包和缺少 Wheel 元数据的文件。"""
+    name, version = os.path.basename(path).split("-")[:2]
+    metadata = f"{name}-{version}.dist-info"
+    with zipfile.ZipFile(path) as wheel:
+        for entry in ("METADATA", "WHEEL", "RECORD"):
+            if f"{metadata}/{entry}" not in wheel.namelist():
+                raise ValueError(f"缺少 {metadata}/{entry}")
+        bad = wheel.testzip()
+        if bad:
+            raise ValueError(f"压缩包校验失败: {bad}")
 
 
 def _install_ability_wheels(app, repos, vendor, cache):
@@ -3719,22 +3827,22 @@ def _install_ability_wheels(app, repos, vendor, cache):
         "ability_py": ("ability_py-0.4.0-py3-none-any.whl", [vendor, cache]),
         "ability_scaffold": ("ability_scaffold-1.2.0-py3-none-any.whl", [vendor]),
     }
+    # 在覆盖运行目录前，先验证全部源码产物及目标目录。
+    for key, (expect, dst_dirs) in expects.items():
+        whl = os.path.join(repos[key], "dist", expect)
+        try:
+            _check_built_wheel(whl)
+        except Exception as e:
+            return ("fail", f"源码 Wheel 缺失或无效: {whl}: {e}; 请检查构建版本与版本清单")
+        for dst_dir in dst_dirs:
+            if not os.path.isdir(dst_dir):
+                return ("fail", f"Wheel 目标目录不存在: {dst_dir}")
     for key, (expect, dst_dirs) in expects.items():
         repo = repos[key]
         prefix = expect.split("-")[0] + "-"
-        wheels = sorted(glob.glob(os.path.join(repo, "dist", prefix + "*.whl")))
-        if not wheels:
-            app.log("err", f"未找到构建产物: {repo}/dist/{prefix}*.whl")
-            continue
-        whl = wheels[-1]
-        name = os.path.basename(whl)
-        if name != expect:
-            app.log("warn", f"{key} 产物 {name} 与 refresh 脚本硬编码的 {expect} 不一致, "
-                            f"Bundle 构建会找不到; 请把版本清单切到对应版本或同步改 refresh_v050_mujoco.py")
+        whl = os.path.join(repo, "dist", expect)
+        name = expect
         for dst_dir in dst_dirs:
-            if not os.path.isdir(dst_dir):
-                app.log("warn", f"目标目录不存在, 跳过: {dst_dir}")
-                continue
             try:
                 dst = os.path.join(dst_dir, name)
                 if os.path.exists(dst) and not os.path.exists(dst + ".lfs-orig"):
@@ -3747,13 +3855,17 @@ def _install_ability_wheels(app, repos, vendor, cache):
                 if os.path.exists(dst):
                     os.remove(dst)
                 shutil.copy2(whl, dst)
+                _check_built_wheel(dst)
                 app.log("ok", f"已安装 {dst}")
             except Exception as e:
-                app.log("err", f"安装到 {dst_dir} 失败: {e}")
+                return ("fail", f"Wheel 安装到 {dst_dir} 失败: {e}")
     # 清掉旧 scaffold venv, 让 refresh 用源码构建的 Wheel 重建
     venv = os.path.join(vendor, ".venv")
     if os.path.isdir(venv):
-        shutil.rmtree(venv, ignore_errors=True)
+        try:
+            shutil.rmtree(venv)
+        except OSError as e:
+            return ("fail", f"无法清理旧 scaffold .venv: {e}")
         app.log("note", "已移除旧 scaffold .venv, refresh 将用源码 Wheel 重建")
     return None
 
@@ -4084,17 +4196,107 @@ class App:
         self.full_redraw = False
         self.prompt = None
         self.confirm = None
+        self.workspace_prompt = None
+        self.clone_workspace = None
         self.cur_used_pw = False
         self.last_auth_fail_sid = None
+        self.forms = {}
+        self.log_paths = {}
+        self.step_log_path = None
+        self.log_error = ""
+        self.last_step = None
+        self.failed_sid = None
         self.env.setdefault("GIT_TERMINAL_PROMPT", "0")
         if self.headless and self.status_migration_backup:
             self.log("warn", "步骤状态文件是旧版编号 (阶段 8/9 互换), 已自动迁移为现编号; "
                              f"原文件备份在 {self.status_migration_backup}")
 
     # ---- 日志 ----
+    def _redact(self, text):
+        text = plain_log_text(text)
+        for key, value in {**self.env, **self.settings, **self.vars}.items():
+            if re.search(r"password|token|secret|(?:^|_)pw$", key, re.I) and isinstance(value, str) and len(value) >= 3:
+                text = text.replace(value, "[REDACTED]")
+        text = re.sub(r"(https?://)[^/\s@]+@", r"\1[REDACTED]@", text)
+        text = re.sub(r"glpat-[A-Za-z0-9_-]+", "[REDACTED]", text)
+        return text
+
+    def _start_step_log(self, sid):
+        self.step_log_path = None
+        for directory in (SCRIPT_DIR / LOG_DIRNAME, Path(tempfile.gettempdir()) / f"semantic-installer-{os.getuid()}"):
+            try:
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                fd, path = tempfile.mkstemp(prefix=f"step-{sid}-", suffix=".log", dir=directory)
+                os.close(fd)
+                self.step_log_path = path
+                self.log_paths[sid] = path
+                self.log_error = ""
+                return
+            except OSError as e:
+                self.log_error = f"无法写入日志: {e}"
+
+    def form_for(self, step):
+        sid = step["sid"]
+        if sid not in self.forms:
+            form = {"rows": [], "fields": [], "error": ""}
+            if step["stage"] == 2:
+                manifest, rows = _repo_plan(self)
+                if sid == "2.3":
+                    rows = [row for row in rows if row["repo"] in
+                            ("semantic-scene/mujoco-asset", "semantic-ability/ability-runtime")]
+                form["rows"] = rows
+                form["fields"] = [("工作区", sx(self.settings["SEMANTIC"])), ("版本清单", manifest or "内置配置")]
+                if sid == "2.3":
+                    form["fields"].append(("拉取清单", "场景资产 / bundle 配置 / 第三方 Wheel"))
+                    form["fields"].append(("Wheel 来源", self.settings.get("RUNTIME_WHEEL_SOURCE", "auto")))
+            else:
+                keys = {
+                    "1.0": ("APT_MIRROR",), "1.1": ("APT_MIRROR", "SUDO_AUTH"),
+                    "1.2": ("GO_VERSION", "GO_DL_MIRROR", "GO_PROXY"),
+                    "1.3": ("NODE_VERSION", "NODE_MIRROR", "NPM_REGISTRY"),
+                    "1.4": ("UV_DEFAULT_INDEX", "GITHUB_PROXY"),
+                    "1.5": ("SEMANTIC_MUJOCO_GL",), "1.6": ("GO_PROXY", "NPM_REGISTRY"),
+                    "3.1": ("SEMANTIC",),
+                }.get(sid, ("SEMANTIC",))
+                form["fields"] = [(key, sx(self.settings.get(key, "")) or "未设置") for key in keys]
+                if sid == "3.1":
+                    form["fields"].append(("管理员密码", "已配置" if self.settings.get("SEMANTIC_ADMIN_PASSWORD") else "未设置"))
+            self.forms[sid] = form
+        return self.forms[sid]
+
     def log(self, kind, text=""):
+        text = self._redact(text)
+        if kind == "err" and not self.step_log_path:
+            self._start_step_log(self.cur["sid"] if self.cur else "startup")
+        if self.step_log_path:
+            try:
+                with open(self.step_log_path, "a", encoding="utf-8") as f:
+                    f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{kind}] {text}\n")
+            except OSError as e:
+                self.log_error = f"无法写入日志: {e}"
+        if kind == "detail":
+            return
+        if self.cur and kind == "out" and text.startswith("[wheel "):
+            form = self.form_for(self.cur)
+            form["fields"] = [(k, v) for k, v in form["fields"] if k != "Wheel 进度"]
+            form["fields"].append(("Wheel 进度", text))
+            self.dirty = True
+            return
+        if self.cur and kind == "out" and text.startswith(REPO_EVENT_MARK):
+            try:
+                local, status = json.loads(text[len(REPO_EVENT_MARK):])
+                if status in ("running", "ok", "skip"):
+                    for row in self.form_for(self.cur)["rows"]:
+                        if row["repo"] == local:
+                            row["status"] = status
+            except (ValueError, TypeError):
+                pass
+            self.dirty = True
+            return
+        if self.cur and kind in ("cmd", "out") and (self.cur["stage"] <= 2 or self.cur["sid"] == "3.1"):
+            return
         # [kind, text, 缓存槽]: 缓存 (宽, 前缀宽, 折行结果), 避免每帧全量重排
-        self.logbuf.append([kind, str(text), None])
+        self.logbuf.append([kind, text, None])
         self.dirty = True
         if self.headless:
             prefix = {"cmd": "$ ", "ok": "[OK] ", "err": "[FAIL] ", "warn": "[WARN] ",
@@ -4159,6 +4361,10 @@ class App:
         self._begin(step, force)
 
     def _begin(self, step, force):
+        self.last_step = step
+        self._start_step_log(step["sid"])
+        self.forms.pop(step["sid"], None)
+        self.log("info", f"开始 {step['sid']} {step['title']}")
         self.force_current = force
         if not force and step.get("skip_check"):
             try:
@@ -4179,22 +4385,30 @@ class App:
         self.set_status(step["sid"], "running")
         try:
             if step.get("pre"):
-                step["pre"](self)
+                if step["pre"](self) is False:
+                    self._finish("fail", "工作区未确认, 已停止后续操作")
+                    return
         except Exception as e:
+            self.log("detail", traceback.format_exc())
             self._finish("fail", f"pre 钩子异常: {e}")
             return
-        kind = step["kind"]
-        if kind == "python":
-            self._run_python(step)
-        elif kind == "service":
-            self._start_service(step)
-        else:
-            self._run_shell(step)
+        try:
+            kind = step["kind"]
+            if kind == "python":
+                self._run_python(step)
+            elif kind == "service":
+                self._start_service(step)
+            else:
+                self._run_shell(step)
+        except Exception as e:
+            self.log("detail", traceback.format_exc())
+            self._finish("fail", f"执行失败: {e}")
 
     def _run_python(self, step):
         try:
             result = step["fn"](self)
         except Exception as e:
+            self.log("detail", traceback.format_exc())
             self.log("err", f"异常: {e}")
             self._finish("fail", str(e))
             return
@@ -4242,11 +4456,11 @@ class App:
         """用 -k 强制重新鉴权来验证密码是否正确"""
         try:
             r = subprocess.run(["sudo", "-S", "-k", "-p", "", "true"],
-                               input=(pw + "\n") * 3, capture_output=True,
+                               input=pw + "\n", capture_output=True,
                                text=True, timeout=30)
             return r.returncode == 0
         except Exception:
-            return True
+            return False
 
     def maybe_retry_auth_failed(self):
         """凭证配置完成后, 询问是否重跑刚才因认证失败的步骤"""
@@ -4268,6 +4482,59 @@ class App:
         if ok:
             self.log("note", f"== 自动重试 {sid} {step['title']} ==")
             self.enqueue_step(step, force=True)
+
+    def prepare_clone_workspace(self):
+        """Resolve the shared clone/build root before evaluating any step commands."""
+        if self.headless:
+            self.log("note", f"无头模式使用已配置工作区: {sx(self.settings['SEMANTIC'])}")
+            return True
+        if self.clone_workspace == sx(self.settings["SEMANTIC"]) and os.path.isdir(self.clone_workspace):
+            return True
+        if not self.workspace_prompt or not self.confirm:
+            self.log("err", "无法显示工作区选择对话框")
+            return False
+        initial = self.clone_workspace or str(SCRIPT_DIR)
+        error = ""
+        while True:
+            chosen = self.workspace_prompt(initial, error)
+            if chosen is None:
+                self.log("note", "已取消拉取/构建工作区选择")
+                return False
+            chosen = sx(chosen.strip())
+            initial = chosen
+            if not chosen or not os.path.isabs(chosen):
+                error = "请输入绝对路径, 例如 /data/semantic"
+                self.log("err", error)
+                continue
+            # Existing build commands interpolate paths inside shell double quotes.
+            if any(c in chosen for c in ('"', '$', '`', '\\')) or any(ord(c) < 32 for c in chosen):
+                error = "路径不能含双引号、美元符、反引号、反斜杠或控制字符"
+                self.log("err", error)
+                continue
+            chosen = os.path.normpath(chosen)
+            if os.path.exists(chosen) and not os.path.isdir(chosen):
+                error = "路径已存在但不是目录, 请重新填写"
+                self.log("err", f"{error}: {chosen}")
+                continue
+            if not self.confirm("确认拉取和构建目录",
+                                f"{chosen}\n将把子仓库拉取到此目录, 后续构建也使用此工作区。\n是否继续?"):
+                self.log("note", "已取消拉取/构建目录确认")
+                return False
+            if not self._ensure_cwd(chosen):
+                return False
+            settings = {**self.settings, "SEMANTIC": chosen}
+            try:
+                save_json(SETTINGS_FILE, settings)
+                write_env_sh(settings)
+            except OSError as e:
+                self.log("err", f"保存工作区设置失败: {e}")
+                return False
+            self.settings["SEMANTIC"] = chosen
+            self.env["SEMANTIC"] = chosen
+            self.clone_workspace = chosen
+            self.forms.pop("2.1", None)
+            self.log("ok", f"拉取/构建工作区已确认: {chosen}; 已保存至 {SETTINGS_FILE} 和 {ENV_SH}")
+            return True
 
     def _ensure_cwd(self, cwd):
         """cwd 不存在时询问是否自动创建 (无头模式直接创建); 返回 False 表示拒绝/失败"""
@@ -4320,6 +4587,9 @@ class App:
                     if not pw:
                         self._finish("fail", "已取消: 未提供 sudo 密码")
                         return
+                    if not self._sudo_pw_valid(pw):
+                        self._finish("fail", "sudo 授权未通过或超时；请重跑并输入 Linux 登录密码，或按 e 设置 SUDO_AUTH=terminal")
+                        return
                     self.vars["SUDO_PW"] = pw
                     self.log("note", "sudo 密码仅存于本进程内存 (不写盘), P 键可清除")
                 cmds, use_pw = self._sudoize(cmds)
@@ -4327,8 +4597,10 @@ class App:
                 self._run_in_terminal(step, cmds, cwd, env)
                 return
         self.cur_used_pw = use_pw
+        self.log("detail", f"工作目录: {cwd or os.getcwd()}")
         script = ["set -eo pipefail"]
         for c in cmds:
+            self.log("detail", c)
             shown = c if "\n" not in c else c.splitlines()[0] + " …(脚本)"
             script.append("echo " + shlex.quote(CMD_MARK + shown))
             script.append(c)
@@ -4618,12 +4890,6 @@ class App:
         if step is None:
             return
         dur = time.time() - self.cur_start
-        if msg and status == "fail":
-            self.log("err", f"{step['sid']} 失败 ({dur:.1f}s): {msg}")
-        elif status == "warn":
-            self.log("warn", f"{step['sid']} 警告 ({dur:.1f}s): {msg or ''}")
-        else:
-            self.log("ok", f"{step['sid']} {step['title']} 完成 ({dur:.1f}s)")
         post = step.get("post")
         if post and status in ("ok", "warn"):
             try:
@@ -4632,12 +4898,32 @@ class App:
                     status = r[0]
                     msg = r[1]
             except Exception as e:
+                self.log("detail", traceback.format_exc())
                 status, msg = "fail", f"post 钩子异常: {e}"
                 self.log("err", msg)
         if status == "ok" and (step.get("verify") or (step.get("kind") == "python")):
-            status = self._run_verify(step) or status
+            verified = self._run_verify(step)
+            if verified:
+                status, msg = verified, "产物校验未通过, 详见步骤日志"
+        if status == "fail":
+            self.log("err", f"{step['sid']} 失败 ({dur:.1f}s): {msg or ''}")
+        elif status == "warn":
+            self.log("warn", f"{step['sid']} 警告 ({dur:.1f}s): {msg or ''}")
+        else:
+            self.log("ok", f"{step['sid']} {step['title']} 完成 ({dur:.1f}s)")
+        if step["stage"] <= 2 or step["sid"] == "3.1":
+            form = self.form_for(step)
+            for row in form["rows"]:
+                if row["status"] == "running" or (status == "ok" and row["status"] == "pending"):
+                    row["status"] = status
+            if status == "fail":
+                detail = next((line for line in reversed(self.cur_out)
+                               if re.search(r"fatal:|error:|permission denied|not found|sudo:|错误密码|对不起，请重试", line, re.I)), msg or "步骤失败")
+                form["error"] = self._redact(detail).splitlines()[0][:180]
+        self.log("info" if status != "fail" else "err", f"最终结果: {status}; {msg or ''}; 日志: {self.step_log_path or self.log_error}")
         self.set_status(step["sid"], status)
         if status == "fail":
+            self.failed_sid = step["sid"]
             self.log("warn", "已停止后续步骤; 修复后重跑本步骤或所在阶段")
             self.queue.clear()
             if self.aborted:
@@ -4772,8 +5058,11 @@ class UI:
         self.stdscr = None
         self.inp = CursesInput()
         self._win_key = None
+        self._form_sid = None
+        self._showing_form = False
         app.prompt = self.password_prompt
         app.confirm = self.confirm_ask
+        app.workspace_prompt = self.workspace_prompt
 
     # ---------- 绘制 ----------
     def draw(self, stdscr):
@@ -4809,7 +5098,7 @@ class UI:
 
     def _draw_top(self, H, W):
         s = self.app.settings
-        left = " Semantic 安装器 《新版Semantic安装步骤》"
+        left = " Semantic Installer"
         right = f"{sx(s['SEMANTIC'])}  "
         self.stdscr.addstr(0, 0, trunc(left, W - dwidth(right) - 1), curses.A_BOLD | curses.color_pair(3))
         self.stdscr.addstr(0, max(0, W - dwidth(right) - 1), trunc(right, W - 1), curses.color_pair(0) | curses.A_DIM)
@@ -4903,6 +5192,19 @@ class UI:
         return rows
 
     def _draw_log(self):
+        step = self.app.cur
+        if step is None and self.rows:
+            kind, selected, _ = self.rows[self.sel]
+            if kind == "step":
+                step = selected
+            else:
+                last = self.app.last_step
+                step = last if last and last["stage"] == selected else self.app.stage_steps(selected)[0]
+        if step and (step["stage"] <= 2 or step["sid"] == "3.1"):
+            self._showing_form = True
+            self._draw_status_form(step)
+            return
+        self._showing_form = False
         win = self.log_win
         win.erase()
         win.box()
@@ -4911,12 +5213,28 @@ class UI:
         if self.focus == "log":
             title = " 日志 (滚动: PgUp/PgDn, End 跟随) "
         win.addstr(0, 2, trunc(title, WW - 4), curses.A_BOLD | curses.color_pair(3))
-        avail = WH - 2
+        y = 1
+        hint = step.get("manual_text") if step else None
+        if step and step["sid"] in ("6.1", "6.3"):
+            hint = step["note"]
+            if callable(hint):
+                hint = hint(self.app)
+        if hint:
+            for line in hint.splitlines():
+                for text in wrap_cells(line, WW - 2):
+                    if y >= WH - 1:
+                        break
+                    win.addstr(y, 1, trunc(text, WW - 2), curses.color_pair(3))
+                    y += 1
+            if step["kind"] == "manual":
+                win.refresh()
+                return
+            y += 1
+        avail = max(0, WH - 1 - y)
         rows = self._log_tail_pairs(avail + self.log_offset + 1)
         total = len(rows)
         start = max(0, total - avail - self.log_offset)
         end = min(total, start + avail)
-        y = 1
         for cp, text in rows[start:end]:
             if y >= WH - 1:
                 break
@@ -4928,6 +5246,52 @@ class UI:
         if self.log_offset > 0:
             pct = int(100 * start / max(1, total))
             win.addstr(WH - 1, 2, f" 向上翻 {self.log_offset} 行 ({pct}%) ", curses.color_pair(3))
+        win.refresh()
+
+    def _draw_status_form(self, step):
+        win = self.log_win
+        win.erase()
+        win.box()
+        height, width = win.getmaxyx()
+        if self._form_sid != step["sid"]:
+            self._form_sid = step["sid"]
+            self.log_offset = 0
+        form = self.app.form_for(step)
+        labels = {"pending": "待执行", "running": "进行中", "ok": "已完成", "skip": "已跳过",
+                  "fail": "失败", "warn": "需检查", "done": "已完成"}
+        title = "拉取清单" if step["stage"] == 2 else "配置与执行状态"
+        win.addstr(0, 2, trunc(f" {title} ", width - 4), curses.A_BOLD | curses.color_pair(3))
+        status = self.app.status(step["sid"])
+        lines = []
+
+        def add(text, color=0):
+            for line in wrap_cells(self.app._redact(text), max(10, width - 4)):
+                lines.append((color, line))
+
+        add(f"步骤: {step['sid']} {step['title']}", 3)
+        add(f"状态: {labels.get(status, status)}", 2 if status == "fail" else 1)
+        if form["error"]:
+            add("故障: " + form["error"], 2)
+        log_path = self.app.log_paths.get(step["sid"])
+        if log_path:
+            add("日志文件: " + log_path, 3)
+        if self.app.log_error:
+            add(self.app.log_error, 2)
+        for key, value in form["fields"]:
+            add(f"{key}: {value}")
+        if form["rows"]:
+            done = sum(row["status"] in ("ok", "skip") for row in form["rows"])
+            add(f"仓库进度: {done}/{len(form['rows'])}", 3)
+            for row in form["rows"]:
+                state = row["status"]
+                add(f"[{labels.get(state, state)}] {row['repo']}  {row['ref'] or '默认版本'}",
+                    2 if state == "fail" else 1 if state == "ok" else 0)
+                add("  远端: " + row["url"])
+        cap = height - 2
+        self.log_offset = max(0, min(self.log_offset, max(0, len(lines) - cap)))
+        for i, (color, text) in enumerate(lines[self.log_offset:self.log_offset + cap], 1):
+            win.addstr(i, 2, trunc(text, width - 4), curses.color_pair(color))
+        win.addstr(height - 1, 2, trunc(" Tab 切换焦点 · ↑↓/PgUp/PgDn 翻页 · e 编辑配置 ", width - 4), curses.color_pair(3))
         win.refresh()
 
     def _draw_bottom(self, H, W):
@@ -5044,6 +5408,20 @@ class UI:
     def handle_log_key(self, ch):
         WH = self.log_win.getmaxyx()[0] - 2 if hasattr(self, "log_win") else 20
         page = max(1, WH - 2)
+        if self._showing_form:
+            if ch in (curses.KEY_UP, ord("k")):
+                self.log_offset = max(0, self.log_offset - 1)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                self.log_offset += 1
+            elif ch == curses.KEY_PPAGE:
+                self.log_offset = max(0, self.log_offset - page)
+            elif ch == curses.KEY_NPAGE:
+                self.log_offset += page
+            elif ch == curses.KEY_HOME:
+                self.log_offset = 0
+            elif ch in (curses.KEY_END, ord("G"), ord("g")):
+                self.log_offset = 999999
+            return
         if ch in (curses.KEY_UP, ord("k")):
             self.log_offset += 1
         elif ch in (curses.KEY_DOWN, ord("j")):
@@ -5246,6 +5624,17 @@ class UI:
         r = self.confirm(self.stdscr, title, text)
         self.app.dirty = True
         return r
+
+    def workspace_prompt(self, initial, error=""):
+        """Use the script's repository as the initial clone/build directory."""
+        if self.stdscr is None:
+            return None
+        chosen = self.input_dialog(
+            self.stdscr, "选择拉取和构建目录",
+            error or "当前仓库目录? Enter 保留, 或填写其他绝对路径:",
+            initial=initial)
+        self.app.dirty = True
+        return chosen
 
     # ---------- GitLab 凭证助手 ----------
     def credential_menu(self, stdscr):
@@ -5618,6 +6007,14 @@ def run_tui(app):
                     "SUDO_AUTH=terminal 可改回终端模式")
 
     os.environ.setdefault("ESCDELAY", str(ESC_GATHER_MS))
+
+    # SIGTERM/SIGHUP 默认直接终止进程 (finally 不会执行), 转成异常保证终端被恢复
+    def _bail(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(_sig, _bail)
+
     stdscr = curses.initscr()
     ok = False
     try:

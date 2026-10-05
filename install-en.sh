@@ -3210,8 +3210,8 @@ SEMANTIC_MANAGER_SOURCE
 # SPDX-License-Identifier: Apache-2.0
 # Shared pre-routing configuration. Works with the system Bash/awk on macOS.
 semantic_config_entry() (
-  local config='' output='' action=install root="$HOME/.local/share/semantic" python='' manager=''
-  [[ "$(uname -s)" != Darwin ]] || root="$HOME/Library/Application Support/Semantic"
+  local config='' output='' action=install root="${HOME:-}/.local/share/semantic" python='' manager=''
+  [[ "$(uname -s)" != Darwin ]] || root="${HOME:-}/Library/Application Support/Semantic"
   local args=() config_args=() key value line parsed
   while (($#)); do
     case "$1" in

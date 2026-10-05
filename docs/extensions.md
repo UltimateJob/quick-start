@@ -266,15 +266,21 @@ TODO（可选，避免两份事实来源漂移）：让 TUI 阶段 8 的产物�
    已实现两类落点与固定顺序，`install.sh` 的 `install_extension()` 在基础环境装好后按
    `--extension` 触发；离线走 `--extension-package-dir`（六个产物齐备即完全离线），
    `--extension-dry-run` 只打印命令计划。CI 用 staging 目录做离线冒烟（见
-   `.github/workflows/extension-release.yml`）。**尚未做**：拿真实六个产物与
-   《LIBERO 打包与安装速查》逐条跑一遍并回填摘要，这是发布前的运维步骤，不是代码缺口。
+   `.github/workflows/extension-release.yml`）。**待办**：在目标机用真实产物按《LIBERO 打包与安装速查》
+   逐条跑一遍安装并回填摘要，这是发布后的运维验收步骤，不是代码缺口。
 3. ~~**发布流水线**：`extensions/<id>/` 的发布脚本 + OSS mutable 白名单 + 版本固化进
    `repo-versions.json`。~~
    **已完成（2026-10）。** OSS mutable 白名单加了 `extensions/*/stable.json`；
    `artifacts/build_extension.py` 回填并产出 staging，`artifacts/publish_extension.py` 发布
    OSS 不可变前缀、提升 `stable.json` 并建 GitHub Release；`repo-versions.json` 的
    `extensions` 段固化了版本、tag 与逐产物锚点。清单模板里的 `sha256` 仍是占位，由
-   `build_extension.py` 在发布时从真实产物回填。
+   `build_extension.py` 在发布时从真实产物回填；OSS 通道上不可变的
+   `extensions/<id>/<version>/extension.json` 已是回填后的真实摘要。
+   **已发布（2026-10-05）**：isaac 0.1.0 与 libero 0.1.0 已推送到 OSS 主通道（桶
+   `insightos-artifacts`，前缀 `semantic`，对象 `public-read`，匿名可读）。
+   GitHub Release 镜像已发到 `insightos-community/quick-start`（tag `ext-isaac-v0.1.0` /
+   `ext-libero-v0.1.0`），公开可下载并校验通过；libero 四个超过 2 GiB 单资产上限的产物
+   （runtime 与三个 franka 包）仅走 OSS，走 GitHub 通道时自动回退。
 4. ~~**Isaac 支持**：`prerequisites` 的探测语义 + 端口段分配 + GPU 前提校验。~~
    **已完成（2026-10）。** 清单模板 `extensions/isaac/extension.json` 已落；`extension.py` 支持
    `prerequisites[].check` 的 probe 执行（失败只 warn 并继续）、`host_requirements.gpu` 与
