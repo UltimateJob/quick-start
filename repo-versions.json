@@ -3,8 +3,8 @@
   "repos": {
     "semantic-framework": {
       "url": "https://github.com/insightos-community/Semantic-Framework.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "81ea016480f099f9db95bd48c083ee99d8806a4d"
+      "ref": "v0.5.0-insightos.2026.3",
+      "commit": "7e484225d37ca33651cb48f9789e81b13d32c1f4"
     },
     "semantic-web": {
       "url": "https://github.com/insightos-community/semantic-web.git",
@@ -33,8 +33,8 @@
     },
     "semantic-simulation/mujoco-runtime": {
       "url": "https://github.com/insightos-community/mujoco-runtime.git",
-      "ref": "v0.5.0-insightos.2026.2",
-      "commit": "03513d48fc6427d3205d63cd29a80ab8dc16b554"
+      "ref": "v0.5.0-insightos.2026.3",
+      "commit": "516dda818507b3406e9a009f486107e04ee0af69"
     },
     "semantic-scene/mujoco-asset": {
       "url": "https://github.com/insightos-community/mujoco-asset.git",
@@ -146,5 +146,5 @@
       }
     }
   },
-  "updated": "2026-10-05 15:05:00"
+  "updated": "2026-10-05 19:05:01"
 }
