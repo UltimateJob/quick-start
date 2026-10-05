@@ -1,99 +1,284 @@
-# LIBERO 扩展场景 — 清单与取得渠道
+# LIBERO extension scenario — user manual
 
-本目录是 LIBERO 扩展场景的**清单源文件**，随仓库版本化。安装本体（下载与校验、安装
-编排）在 `artifacts/runtime/extension.py`，设计依据见 `../../docs/extensions.md`。
+**English** | [简体中文](README.zh-CN.md)
 
-`extension.json` 由安装器直接解析。改字段前先读 `docs/extensions.md` 第一节：清单约束
-不是风格偏好，`verify` 会按它逐字节校验。
-
-## 通道布局
-
-OSS 是主通道，GitHub Releases 是镜像；一份清单两处通用。
+LIBERO is a tabletop manipulation benchmark (robosuite 1.4, Franka and SmolVLA). This manual takes
+you from zero to a running LIBERO scenario inside Semantic, then through the web Studio. It follows
+one path:
 
 ```text
-OSS:    <oss>/extensions/libero/stable.json                # 可变指针 {"version":"0.1.0"}
-        <oss>/extensions/libero/0.1.0/extension.json       # 不可变清单
-        <oss>/extensions/libero/0.1.0/<artifact>           # 不可变产物
-GitHub: tag ext-libero-v0.1.0 的 Release                   # 不可变镜像（资产平铺）
+① Environment preparation → ② Install into the framework → ③ Reproduce in the web Studio
 ```
 
-清单里每个产物的 `url` 是**相对路径**（裸文件名），安装时按所选通道拼成绝对地址：
+> Once the base environment is installed, the LIBERO artifacts are **self-contained**: no engine
+> image and no separately obtained dataset. The only external dependency is the model weights
+> (through a HuggingFace mirror).
 
-- `--extension-source oss`（默认）：`<base>/extensions/libero/0.1.0/<名称>`
-- `--extension-source github`：`https://github.com/<org>/quick-start/releases/download/ext-libero-v0.1.0/<名称>`
+---
 
-> **GitHub 通道对 LIBERO 不完整。** `franka-libero-robot.zip`（约 2.9 GB）、
-> `franka-ability.zip`（约 2.9 GB）、`franka-smolvla-model.zip`（约 3.3 GB）都超过
-> GitHub 单个 Release 资产的 **2 GiB 硬上限**，清单把它们标成 `hosts: ["oss"]`。
-> 走 GitHub 通道时安装器**自动回退到 OSS** 下载这三件；其余三件仍从 GitHub 取。
-> 也就是说 GitHub 通道能装，但离线不可用——离线请用 `--extension-package-dir`。
+## 0. End-to-end overview
 
-## 发布流程（sha256 与 size 从哪来）
+```text
+① Base environment   install.sh (no extension) → usable Server + Studio
+② Install LIBERO     install.sh --extension libero --extension-project <PROJECT-ID>
+③ Web reproduction   scene configuration → add a compatible scene; project content → bind ability and model; device centre → add a Pilot
+④ Acceptance         pick an initial state → start the scene → robot online → dispatch the expected robot skill
+```
 
-仓库里这份 `extension.json` 是**模板**：`sha256` 全是 `0`，`size` 是 2026-09 实测值。
-真实产物在构建机上，按下面两步回填与发布，**不要手填**。
+Fixed installation order: **runtime → scene catalog → robot base → ability → model → skill**. The
+robot base (Bundle) is the foundation; the last three plug into it, so the reverse order does not
+work. The manifest enforces this order and `install.sh` / `semanticctl` follow it automatically.
+
+---
+
+## 1. Environment preparation
+
+### 1.1 Hardware and system
+
+| Item | Requirement | Notes |
+|---|---|---|
+| CPU / memory | 16 GB RAM or more recommended | Integrated graphics works; inference is just slower |
+| Disk | about **25 GB** free | six artifacts total about 11.5 GB, plus an unpacked copy |
+| GPU | optional; a discrete GPU is faster | **Integrated graphics works**: CPU inference has automatic thread tuning (`OMP_NUM_THREADS`, etc.) |
+| Network | access to OSS (default channel) | on the GitHub channel the three largest artifacts still fall back to OSS, so use `--extension-package-dir` for a fully offline install |
+
+### 1.2 Model weights (the only external dependency)
+
+SmolVLA weights come from HuggingFace. **huggingface.co is unreachable from mainland China**; use a
+mirror (a proxy or the mirror, either one):
 
 ```bash
-# 1. 在构建机产出六个产物后，回填并生成 staging（清单 + 产物 + stable.json）
-python3 artifacts/build_extension.py --id libero --version 0.1.0 \
-  --package-dir <六个产物所在目录> --output <仓库外的 staging 目录>
-#    —— 逐产物算 sha256/size 写回 extensions/libero/0.1.0/extension.json，
-#       用 extension.parse 自检，并为超 2 GiB 的产物自动加 hosts=["oss"]。
-
-# 2. 发布：OSS 不可变前缀 + stable.json 指针，再建 GitHub Release（可镜像产物）
-python3 artifacts/publish_extension.py --id libero --version 0.1.0 \
-  --staging <staging 目录> --channel oss,github
+export HF_ENDPOINT=https://hf-mirror.com
 ```
 
-`build_extension.py` 只在全部六个产物齐备时才写出清单，缺件直接失败。扩展版本与 GitHub tag
-固化在 `repo-versions.json` 的 `extensions.libero`；产物摘要固化在通道上的不可变
-`extensions/libero/0.1.0/extension.json`，复现时以它为准。上传走 `artifacts/oss_client.py` 的
-既有通道，`extensions/libero/stable.json` 是可变对象，已在 OSS mutable 白名单里
-（`artifacts/oss_client.py` 的 `MUTABLE_PATTERNS`）。
+### 1.3 Ports
 
-发布后核对一次，确认通道上的对象与清单一致：
+| Purpose | Default | Decided by |
+|---|---|---|
+| LIBERO runtime | `8092` | manifest `runtime.endpoint` (different from the base environment's native-mujoco `8090`, so both can coexist) |
+| Ability range | `18100–18199` | `ability_port_first` / `ability_port_last` in `semantic-server.yaml` |
+| Server HTTP / WS | `8034` / `8035` | `semantic-server.yaml` |
+| Web front end | `3000` | `semantic-web` |
+
+> **BEHAVIOR and LIBERO on one host** both default to `18100–18199`. Allocate different ranges, or you
+> will see `http server bind ... failed`.
+
+---
+
+## 2. Install into the framework
+
+Same entry script as the base install; it continues into the extension once the base environment is
+ready:
+
+```bash
+curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
+  --extension libero --extension-project <PROJECT-ID> --install-system-deps
+```
+
+| Flag | Purpose |
+|---|---|
+| `--extension libero` | select the scenario (required) |
+| `--extension-project <PROJECT-ID>` | target project; defaults to the current user's Default Project (component install requires `mode=development`) |
+| `--extension-source oss\|github` | channel, default `oss` |
+| `--extension-package-dir <dir>` | install **fully offline** from the six artifacts plus the manifest |
+| `--extension-manifest <file>` | override the manifest source with a local file |
+| `--extension-dry-run` | print the command plan without changing anything |
+
+Preview the plan first:
+
+```bash
+curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
+  --extension libero --extension-dry-run
+```
+
+With the base environment already installed, the bundled manager works too:
+
+```bash
+semanticctl extension list
+semanticctl extension show libero        # artifacts, sizes, order, license
+semanticctl extension verify libero      # download and verify only, no install
+semanticctl extension install libero --project <PROJECT-ID>
+```
+
+> If `semanticctl` is not on your PATH, first `export PATH="$HOME/.local/share/semantic/bin:$PATH"`
+> (use your actual dir when you passed `--dir`); the base install prints these two lines and tells you
+> to persist them. See the entry point.
+
+---
+
+## 3. Reproduce in the web Studio
+
+The base install creates the administrator `admin` with a random password, printed by:
+
+```bash
+"$HOME/.local/share/semantic/bin/semanticctl" welcome
+```
+
+Open the web Studio (default `http://127.0.0.1:3000`), sign in as `admin`, and open the target
+project. The three steps below are all required.
+
+### 3.1 Scene configuration → add a compatible scene
+
+Installation only registers the scene in the **scene catalog**; it does not add it to the project. In
+Studio, open **Scene → Project scenes** on the left and click **Add** (or **Browse scenes** when the
+panel is empty):
+
+![Click Add in the project scenes panel](../images/libero/step-1-scene-panel.png)
+
+In the **Add compatible scene** dialog, click the scene card you want (for example
+`libero-spatial-0`), then **Add to Project**:
+
+![Select a scene card and Add to Project](../images/libero/step-2-add-scene.png)
+
+> **Do not generate previews for everything.** The manifest holds 130 tasks / 6500 initial states;
+> without limiting `--scene`, previews are generated for every initial state, which is very slow. Add
+> only the cards you need. When free VRAM is below 6144 MiB the installer **automatically** skips
+> preview generation (no flag needed); to control it yourself, pass `--no-previews` to
+> `semanticctl extension install`.
+
+After adding, the scene appears under **Project scenes**. The **Runtime** row confirms `LIBERO / LIBERO-Pro`, and the initial states of the task are ready to start:
+
+![The LIBERO scene running in Studio](../images/libero/overview.png)
+
+### 3.2 Project content → bind the ability and model
+
+Installation **imports** the ability and model into the project but **does not bind them to the
+robot**. Without binding, the ability stays in `Standby` (`abilityPort: 0`) until it times out, the
+Pilot stays `offline`, and the device page shows no executable robot.
+
+1. In Studio, open **Project → Import project content** and scroll the dialog to the **Robot and
+   model configuration** section at the bottom:
+
+   ![Robot and model configuration in Import project content](../images/common/step-2-bind.png)
+
+2. On a robot card, click **Select ability / model** (to make the current choice the default for
+   future robots instead, click **Set project default** in the top right);
+3. In the dialog choose, in order, **robot model** `franka_panda` → **ability (one implementation per
+   role)** → **policy model** (e.g. SmolVLA, package `franka-smolvla-model`), then click **Save
+   binding**;
+4. Back on that robot's card, click **Apply now / retry** — this **stops and restarts that robot's
+   components once** (the scene keeps its current state), so confirm the robot is idle first.
+
+**Done when**: the card's "pending configuration" and "running model" agree and it no longer sits in
+`Standby`. A project default only applies to **future first-time bindings**; each robot's own choice
+is stored independently.
+
+### 3.3 Device centre → add a Pilot
+
+Open **Device centre** (top menu `Device / Device centre`) and click **Add Pilot**:
+
+![Click Add Pilot in the device centre](../images/common/step-3-devices.png)
+
+Note that **"Add Pilot" does not add a robot directly**: it only mints a one-time join code, and the
+robot is registered only after you run the launcher on the **robot host** and the launcher exchanges
+that code for a credential.
+
+1. The dialog shows the **one-time join code** (6 digits, valid about 5 minutes, claimable only once)
+   and a launcher command; click **Copy command** to take both (do not commit the join code or the
+   later credential to a repository):
+
+   ![Copy the one-time join code and launcher command](../images/common/step-4-add-pilot.png)
+
+2. On the **robot host**, run that command in the foreground and keep it running (replace
+   `<robot-id>` with the actual robot):
+
+   ```bash
+   semantic-robot-instance start --config /etc/semantic/robots/<robot-id>/robot-deployment.yaml --join-code <JOIN-CODE>
+   ```
+
+   The launcher discovers the Server over the LAN (mDNS service `_semantic-server._tcp`; mDNS is
+   often unavailable on container networks, so you may append
+   `--server-http http://<server>:8034 --server-ws ws://<server>:8035/ws/pilot`), exchanges the join
+   code for that Pilot's dedicated credential and stores it on the robot host (in the instance
+   directory's `connection.yaml`, mode `0600`), then starts **AbilityFramework → the seven ability
+   classes → Pilot** in order, after which the Server reconciles and dispatches the expected robot
+   skill.
+3. Back in the dialog, click **Done** — it only closes the dialog; pairing completed the moment the
+   launcher claimed the join code. After a moment the robot should appear in the device list with
+   connection **online**.
+
+Restarting the robot afterwards **no longer needs a join code** (the credential is already on the
+robot host):
+
+```bash
+semantic-robot-instance start --config /etc/semantic/robots/<robot-id>/robot-deployment.yaml
+```
+
+Check the instance state itself:
+
+```bash
+semantic-robot-instance status --instance ~/.local/state/semantic/robots/<robot-id>
+# expect status: running, a non-zero pilot_pid, and 7 ability_instance_ids
+```
+
+> **Pilot online ≠ robot executable.** If the Pilot shows online but the robot is not executable,
+> keep checking the expected/actual state of AbilityFramework, the seven ability classes and the robot
+> skill, plus project occupancy — do not watch only the Pilot heartbeat.
+
+### 3.4 Acceptance
+
+Accept the result in this order (screenshots above):
+
+1. the scene is under **Project scenes** — you can pick an initial state and start the scene;
+2. the robot appears in **Device centre** with connection **online** and a status other than `degraded`;
+3. dispatching the expected robot skill shows events under **Current execution / Execution history**.
+
+---
+
+## 4. Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Runtime install failed: ... requires content ...` | the runtime package is missing content; LIBERO does not need `--asset-root`, so do not pass an empty value |
+| `http server bind ... failed` | the ability port range collides with another scenario; give each environment its own range |
+| The project does not show the scene | the compatible scene was never added (3.1) |
+| The robot stays `offline` / the ability stays `Standby` | the ability and model were not bound (3.2), or no Pilot was added (3.3) |
+| Model download fails | huggingface.co is unreachable; set `HF_ENDPOINT=https://hf-mirror.com` |
+| Preview generation is extremely slow | previews for all 6500 initial states; add only the needed scenes, or pass `--no-previews` to `semanticctl extension install` |
+
+For troubleshooting and acceptance you can verify without installing:
 
 ```bash
 semanticctl extension verify libero --source oss
 ```
 
-## 六个产物与安装顺序
+---
 
-顺序固定：**Runtime → 场景 → 运行支持 → Ability → 模型 → Skill**。Bundle（运行支持）
-是底座，后三者往它上面插，倒序装不上去。
+## 5. Uninstall
 
-| 角色 | 产物 | 体积 | 通道 |
+Stop the scene and the robot first, then remove the extension. The base environment's native-mujoco
+runtime is unaffected (`installation_id` and endpoint are independent):
+
+```bash
+semanticctl extension remove libero
+```
+
+---
+
+## Reference
+
+### The six artifacts
+
+| Role | Artifact | Size | Channel |
 |---|---|---|---|
-| `runtime` | `semantic-libero-robosuite-1.4-0.4.0-dev.0.runtime.tar.zst` | 约 2.2 GB | OSS + GitHub |
-| `scene_catalog` | `libero-scenes.zip` | 约 239 MB | OSS + GitHub |
-| `robot_base` | `franka-libero-robot.zip` | 约 2.9 GB | 仅 OSS（>2 GiB） |
-| `robot_ability` | `franka-ability.zip` | 约 2.9 GB | 仅 OSS（>2 GiB） |
-| `model` | `franka-smolvla-model.zip` | 约 3.3 GB | 仅 OSS（>2 GiB） |
-| `robot_skill` | `vla-manipulation.zip` | 约 12 KB | OSS + GitHub |
+| `runtime` | `semantic-libero-robosuite-1.4-0.4.0-dev.0.runtime.tar.zst` | about 2.2 GB | OSS + GitHub |
+| `scene_catalog` | `libero-scenes.zip` | about 239 MB | OSS + GitHub |
+| `robot_base` | `franka-libero-robot.zip` | about 2.9 GB | OSS only (>2 GiB) |
+| `robot_ability` | `franka-ability.zip` | about 2.9 GB | OSS only (>2 GiB) |
+| `model` | `franka-smolvla-model.zip` | about 3.3 GB | OSS only (>2 GiB) |
+| `robot_skill` | `vla-manipulation.zip` | about 12 KB | OSS + GitHub |
 
-Runtime 的 `installation_id` 是 `local-libero-robosuite-1.4`，endpoint 固定 `8092`——
-基础环境的 native-mujoco 用 `8090`，两者并存时不能复用。
+The runtime `installation_id` is `local-libero-robosuite-1.4` and its endpoint is fixed at `8092`.
 
-## 许可
+### License
 
-LIBERO 是上游第三方 benchmark（`github.com/Lifelong-Robot-Learning/LIBERO`），资产已获
-授权在本通道内再分发。清单的 `license` 与 Runtime 包的 `license` 都是 `LIBERO`；装带
-`license` 字段的扩展时安装器会自动补 `--accept-license LIBERO`（也可显式传
-`--accept-license LIBERO`）。不要因为"能下载"就默认可再分发。
+LIBERO is an upstream third-party benchmark (`github.com/Lifelong-Robot-Learning/LIBERO`); its assets
+are redistributed through this channel under authorization. For an extension whose manifest declares
+`license`, the installer adds `--accept-license LIBERO` automatically (you may also pass it
+explicitly). "Downloadable" does not mean freely redistributable.
 
-## 人工前置
+### Design
 
-清单 `prerequisites` 与 `post_install` 表达的是**装不进来、只能由人做**的部分：
-
-- 模型权重走 HuggingFace 镜像（`HF_ENDPOINT=https://hf-mirror.com`，国内官网不可达）；
-  代理与镜像二者取一即可。
-- 场景落库只注册到场景目录，不会自动进项目，要手动「添加兼容场景」。
-- 不绑定 Ability 与模型，Robot 起不来：Ability 停在 `Standby`（`abilityPort: 0`）直到
-  超时，Pilot 一直 `offline`。
-- Skill 带 `robot_required`，需要设备中心先有 Robot；全新环境要先「添加 Pilot」拿一次性
-  加入码。
-
-## 已验证的现场结论
-
-2026-09 在核显机器（Intel 核显 / 30 GB 内存，无独显）上的完整实测记在 `../../NOTES.md`
-的「LIBERO 扩展场景」一节，包括 CPU 推理调优与 heartbeat timeout 的性质。装之前值得先读。
+Manifest structure, channel layout and the release flow are in
+[`../../docs/extensions.md`](../../docs/extensions.md); the entry point and directory convention are
+in [`../README.md`](../README.md).
