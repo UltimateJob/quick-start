@@ -108,9 +108,9 @@
       }
     },
     "isaac": {
-      "version": "0.1.0",
+      "version": "0.1.1",
       "channel": "oss,github",
-      "github_tag": "ext-isaac-v0.1.0",
+      "github_tag": "ext-isaac-v0.1.1",
       "note": "六个产物均小于 GitHub 2 GiB 单资产上限，可完整镜像。",
       "artifacts": {
         "behavior-runtime-0.1.18.zip": {

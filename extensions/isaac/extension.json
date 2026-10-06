@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "isaac",
   "title": "BEHAVIOR 场景 (Isaac Sim 5.1 + OmniGibson 3.9.2 + R1Pro + π0.5)",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "compatible_base": ">=0.5.0",
   "profile": "behavior-omnigibson",
   "note": "模板文件: url 为相对路径 (由 --source/base 拼接), sha256 与 size 由 artifacts/build_extension.py 从真实产物回填 (见同目录 README.md)。当前 size 取自 2026-09 实测值。六个产物均小于 GitHub 2 GiB 单资产上限, 可完整镜像。引擎镜像与数据集不在清单里 (不可下载, 只能探测)。",
@@ -30,7 +30,7 @@
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size": 1331,
       "previews": {
-        "default_scenes": ["turning-on-radio"],
+        "default_scenes": ["behavior-turning_on_radio-0"],
         "note": "包内 7 个场景, 只登记任务与原生实例引用, 资产由 Runtime 的 asset-root 解析; 预览需 >=6144 MiB 空闲显存, 6 GB 卡上必须 --generate-previews=false"
       }
     },
