@@ -75,7 +75,7 @@
     { "kind": "probe", "text": "本机已导入引擎镜像 behavior:v3.9.2 且身份与 runtime-settings.json 一致",
       "check": "docker image inspect behavior:v3.9.2 >/dev/null 2>&1" },
     { "kind": "probe", "text": "asset-root 所在盘可用空间 >= 50 GiB",
-      "check": "test \"$(df -B1G --output=avail . 2>/dev/null | tail -1)\" -ge 50" },
+      "check": "test -d \"{asset_root}\" && test \"$(df -B1G --output=avail \"{asset_root}\" 2>/dev/null | tail -1)\" -ge 50" },
     { "kind": "probe", "text": "存在空闲显存 >= 6144 MiB 的 GPU (预览需要, 仅启动场景可更低)",
       "check": "test \"$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | sort -nr | head -1)\" -ge 6144" },
     { "kind": "user_action", "text": "授权数据集需按上游说明单独取得 (数十 GB), 用 --asset-root 指向其上一级目录" },

@@ -1043,7 +1043,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'扩展场景 {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\t端口 {port}\t{detail}')
@@ -1051,7 +1052,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start 未启动 Server; 组件安装会因服务未就绪而失败')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)
@@ -2511,12 +2512,38 @@ def render(manifest, base=None):
     return rows
 
 
-def probe_rows(manifest, runner=None):
+# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from
+# the install call, never from the manifest, so a channel manifest cannot smuggle
+# in a host path of its own choosing.
+PROBE_VALUES = ('asset_root',)
+
+
+def render_probe(command, values=None):
+    """Substitute ``{asset_root}``-style tokens into a probe command.
+
+    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs
+    a value the caller did not provide, so ``probe_rows`` can report a skip rather
+    than run a shell command still containing a literal ``{asset_root}``.
+    """
+    values = values or {}
+    missing = [name for name in PROBE_VALUES
+               if '{' + name + '}' in command and not values.get(name)]
+    if missing:
+        return None, missing
+    for name in PROBE_VALUES:
+        if values.get(name):
+            command = command.replace('{' + name + '}', str(values[name]))
+    return command, []
+
+
+def probe_rows(manifest, runner=None, values=None):
     """Run the manifest's ``probe`` steps. Failures warn; nothing raises.
 
     The execution semantics are "skippable but reported": a probe that fails must
     not block the install, or a normal "install the base first, add the image
-    later" order would be impossible.
+    later" order would be impossible. A probe whose command needs a value the
+    caller did not supply (for example a disk check that names ``{asset_root}``
+    while ``--asset-root`` was omitted) is reported as ``skip``.
     """
     runner = runner or run_probe
     rows = []
@@ -2526,6 +2553,11 @@ def probe_rows(manifest, runner=None):
         command = item.get('check')
         if not command:
             rows.append((item['text'], 'skip', '清单未提供 check 命令'))
+            continue
+        command, missing = render_probe(command, values)
+        if command is None:
+            flags = ', '.join('--' + name.replace('_', '-') for name in missing)
+            rows.append((item['text'], 'skip', f'未提供 {flags}，跳过该探测'))
             continue
         try:
             code, output = runner(command)
@@ -2791,6 +2823,21 @@ def cli_environment(root, project, dry_run, report):
     return project, dict(os.environ, HOME=str(home))
 
 
+PLACEHOLDER_SHA256 = '0' * 64
+
+
+def placeholder_artifacts(manifest):
+    """Artifacts still carrying the template's all-zero digest.
+
+    ``extensions/<id>/extension.json`` is a build template: the release tool
+    backfills real digests (``artifacts/build_extension.py``) before anything is
+    published. Installing the template itself would sail past the plan, then fail
+    in digest verification artifact by artifact, so name the problem up front.
+    """
+    records = [manifest['runtime']['pack'], *manifest['components']]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+
+
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
             package_dir=None, workspace=None, replace=False, previews=True, scenes=None,
             dry_run=False, report=print, runner=None):
@@ -2799,6 +2846,11 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
     Offline installs take artifacts from ``package_dir``; otherwise they are
     expected in ``workspace`` (the caller downloads them there first).
     """
+    placeholders = placeholder_artifacts(manifest)
+    if placeholders:
+        raise ManifestError(
+            '清单里的 sha256 仍是占位值 (全 0): ' + ', '.join(placeholders)
+            + '；请改用发布通道的清单，或先用 artifacts/build_extension.py 回填后再离线安装')
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
     paths = artifact_paths(manifest, package_dir, workspace)
@@ -2918,7 +2970,8 @@ def entry(args):
     project = getattr(args, 'project', None)
     dry_run = getattr(args, 'dry_run', False)
     if action == 'install':
-        for name, state, detail in probe_rows(manifest):
+        asset_root = getattr(args, 'asset_root', None)
+        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):
             emit(state, name, detail)
         for port, detail in port_warnings(manifest):
             emit('warn', f'端口 {port}', detail)
@@ -2927,7 +2980,7 @@ def entry(args):
         if not package_dir and not dry_run:
             workspace.mkdir(parents=True, exist_ok=True)
         install(manifest, root, project=project, robot=getattr(args, 'robot', None),
-                asset_root=getattr(args, 'asset_root', None),
+                asset_root=asset_root,
                 accept_license=getattr(args, 'accept_license', None),
                 package_dir=package_dir, workspace=workspace,
                 replace=getattr(args, 'replace', False),

@@ -598,7 +598,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'扩展场景 {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\t端口 {port}\t{detail}')
@@ -606,7 +607,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start 未启动 Server; 组件安装会因服务未就绪而失败')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)

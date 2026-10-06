@@ -278,6 +278,14 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 - The extension runtime pack's declared `license` is added from the manifest
   (`--accept-license behavior-assets`).
 - Fixed order: runtime → scene catalog → robot base → ability → model → skill.
+- An offline install (`--extension-package-dir` or `--extension-manifest`) needs a manifest whose
+  digests have been **backfilled**: the channel artifacts, or a staging tree produced by
+  `artifacts/build_extension.py`. The `extensions/isaac/extension.json` in this repository is a
+  **build template** with all-zero `sha256`; the installer rejects it up front with
+  "manifest still carries placeholder sha256" instead of downloading and failing digest by digest.
+- The disk probe is evaluated against this run's `--asset-root`: the manifest `check` writes
+  `{asset_root}` and the installer substitutes it before running. With no `--asset-root` the row is
+  reported as `skip` (the current directory is no longer used as a stand-in for the asset disk).
 
 With the base environment already installed:
 
@@ -410,6 +418,11 @@ semantic-robot-instance start --config /etc/semantic/robots/<robot-id>/robot-dep
 | Ability range | `18100–18199` | `ability_port_first` / `ability_port_last` in `semantic-server.yaml` |
 | π0.5 policy service | `20080` | the `--port` from 1.4, which must equal the model configuration's `endpoint` |
 | LIBERO runtime | `8092` | LIBERO manifest (can coexist with BEHAVIOR) |
+
+A prebuilt install defaults to HTTP/WS `8034` / `8035`; a **source build** (`build.sh` /
+`semantic_installer.py`) defaults to `8080` / `8081` (`SERVER_HTTP` / `SERVER_WS`). Only the defaults
+differ — an existing instance always keeps its **configured** ports and never migrates when the
+defaults change, so check which install path you are on before comparing port numbers.
 
 When BEHAVIOR and LIBERO run on one host, both default to `18100–18199`; give each environment its own
 range or you will see `http server bind ... failed`.

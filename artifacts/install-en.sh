@@ -1044,7 +1044,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'Extension scene {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\tPort {port}\t{detail}')
@@ -1052,7 +1053,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start left the Server stopped; component installs fail until it runs')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)
@@ -2512,12 +2513,38 @@ def render(manifest, base=None):
     return rows
 
 
-def probe_rows(manifest, runner=None):
+# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from
+# the install call, never from the manifest, so a channel manifest cannot smuggle
+# in a host path of its own choosing.
+PROBE_VALUES = ('asset_root',)
+
+
+def render_probe(command, values=None):
+    """Substitute ``{asset_root}``-style tokens into a probe command.
+
+    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs
+    a value the caller did not provide, so ``probe_rows`` can report a skip rather
+    than run a shell command still containing a literal ``{asset_root}``.
+    """
+    values = values or {}
+    missing = [name for name in PROBE_VALUES
+               if '{' + name + '}' in command and not values.get(name)]
+    if missing:
+        return None, missing
+    for name in PROBE_VALUES:
+        if values.get(name):
+            command = command.replace('{' + name + '}', str(values[name]))
+    return command, []
+
+
+def probe_rows(manifest, runner=None, values=None):
     """Run the manifest's ``probe`` steps. Failures warn; nothing raises.
 
     The execution semantics are "skippable but reported": a probe that fails must
     not block the install, or a normal "install the base first, add the image
-    later" order would be impossible.
+    later" order would be impossible. A probe whose command needs a value the
+    caller did not supply (for example a disk check that names ``{asset_root}``
+    while ``--asset-root`` was omitted) is reported as ``skip``.
     """
     runner = runner or run_probe
     rows = []
@@ -2527,6 +2554,11 @@ def probe_rows(manifest, runner=None):
         command = item.get('check')
         if not command:
             rows.append((item['text'], 'skip', 'The manifest declares no check command'))
+            continue
+        command, missing = render_probe(command, values)
+        if command is None:
+            flags = ', '.join('--' + name.replace('_', '-') for name in missing)
+            rows.append((item['text'], 'skip', f'no {flags} given; probe skipped'))
             continue
         try:
             code, output = runner(command)
@@ -2792,6 +2824,21 @@ def cli_environment(root, project, dry_run, report):
     return project, dict(os.environ, HOME=str(home))
 
 
+PLACEHOLDER_SHA256 = '0' * 64
+
+
+def placeholder_artifacts(manifest):
+    """Artifacts still carrying the template's all-zero digest.
+
+    ``extensions/<id>/extension.json`` is a build template: the release tool
+    backfills real digests (``artifacts/build_extension.py``) before anything is
+    published. Installing the template itself would sail past the plan, then fail
+    in digest verification artifact by artifact, so name the problem up front.
+    """
+    records = [manifest['runtime']['pack'], *manifest['components']]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+
+
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
             package_dir=None, workspace=None, replace=False, previews=True, scenes=None,
             dry_run=False, report=print, runner=None):
@@ -2800,6 +2847,11 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
     Offline installs take artifacts from ``package_dir``; otherwise they are
     expected in ``workspace`` (the caller downloads them there first).
     """
+    placeholders = placeholder_artifacts(manifest)
+    if placeholders:
+        raise ManifestError(
+            'manifest still carries placeholder sha256 (all zeros): ' + ', '.join(placeholders)
+            + '; use the channel manifest, or backfill the digests with artifacts/build_extension.py before installing offline')
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
     paths = artifact_paths(manifest, package_dir, workspace)
@@ -2919,7 +2971,8 @@ def entry(args):
     project = getattr(args, 'project', None)
     dry_run = getattr(args, 'dry_run', False)
     if action == 'install':
-        for name, state, detail in probe_rows(manifest):
+        asset_root = getattr(args, 'asset_root', None)
+        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):
             emit(state, name, detail)
         for port, detail in port_warnings(manifest):
             emit('warn', f'Port {port}', detail)
@@ -2928,7 +2981,7 @@ def entry(args):
         if not package_dir and not dry_run:
             workspace.mkdir(parents=True, exist_ok=True)
         install(manifest, root, project=project, robot=getattr(args, 'robot', None),
-                asset_root=getattr(args, 'asset_root', None),
+                asset_root=asset_root,
                 accept_license=getattr(args, 'accept_license', None),
                 package_dir=package_dir, workspace=workspace,
                 replace=getattr(args, 'replace', False),
@@ -4948,7 +5001,8 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    if not package_dir and not dry_run:\n'
             '        workspace.mkdir(parents=True, exist_ok=True)\n'
             '    print(f\'Extension scene {manifest["id"]}: {manifest["title"]} ({manifest["version"]})\')\n'
-            '    for name, state, detail in extension.probe_rows(manifest):\n'
+            "    asset_root = getattr(a, 'extension_asset_root', None)\n"
+            "    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):\n"
             "        print(f'{state}\\t{name}\\t{detail}')\n"
             '    for port, detail in extension.port_warnings(manifest):\n'
             "        print(f'warn\\tPort {port}\\t{detail}')\n"
@@ -4956,7 +5010,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        print('note\\tServer\\t--no-start left the Server stopped; component installs fail until it runs')\n"
             "    return extension.install(manifest, root, project=getattr(a, 'extension_project', None),\n"
             "                             robot=getattr(a, 'extension_robot', None),\n"
-            "                             asset_root=getattr(a, 'extension_asset_root', None),\n"
+            '                             asset_root=asset_root,\n'
             "                             accept_license=getattr(a, 'accept_license', None),\n"
             '                             package_dir=package_dir, workspace=workspace,\n'
             '                             replace=True, dry_run=dry_run)\n'
@@ -6416,12 +6470,38 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    return rows\n'
             '\n'
             '\n'
-            'def probe_rows(manifest, runner=None):\n'
+            '# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from\n'
+            '# the install call, never from the manifest, so a channel manifest cannot smuggle\n'
+            '# in a host path of its own choosing.\n'
+            "PROBE_VALUES = ('asset_root',)\n"
+            '\n'
+            '\n'
+            'def render_probe(command, values=None):\n'
+            '    """Substitute ``{asset_root}``-style tokens into a probe command.\n'
+            '\n'
+            '    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs\n'
+            '    a value the caller did not provide, so ``probe_rows`` can report a skip rather\n'
+            '    than run a shell command still containing a literal ``{asset_root}``.\n'
+            '    """\n'
+            '    values = values or {}\n'
+            '    missing = [name for name in PROBE_VALUES\n'
+            "               if '{' + name + '}' in command and not values.get(name)]\n"
+            '    if missing:\n'
+            '        return None, missing\n'
+            '    for name in PROBE_VALUES:\n'
+            '        if values.get(name):\n'
+            "            command = command.replace('{' + name + '}', str(values[name]))\n"
+            '    return command, []\n'
+            '\n'
+            '\n'
+            'def probe_rows(manifest, runner=None, values=None):\n'
             '    """Run the manifest\'s ``probe`` steps. Failures warn; nothing raises.\n'
             '\n'
             '    The execution semantics are "skippable but reported": a probe that fails must\n'
             '    not block the install, or a normal "install the base first, add the image\n'
-            '    later" order would be impossible.\n'
+            '    later" order would be impossible. A probe whose command needs a value the\n'
+            '    caller did not supply (for example a disk check that names ``{asset_root}``\n'
+            '    while ``--asset-root`` was omitted) is reported as ``skip``.\n'
             '    """\n'
             '    runner = runner or run_probe\n'
             '    rows = []\n'
@@ -6431,6 +6511,11 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        command = item.get('check')\n"
             '        if not command:\n'
             "            rows.append((item['text'], 'skip', 'The manifest declares no check command'))\n"
+            '            continue\n'
+            '        command, missing = render_probe(command, values)\n'
+            '        if command is None:\n'
+            "            flags = ', '.join('--' + name.replace('_', '-') for name in missing)\n"
+            "            rows.append((item['text'], 'skip', f'no {flags} given; probe skipped'))\n"
             '            continue\n'
             '        try:\n'
             '            code, output = runner(command)\n'
@@ -6696,6 +6781,21 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    return project, dict(os.environ, HOME=str(home))\n'
             '\n'
             '\n'
+            "PLACEHOLDER_SHA256 = '0' * 64\n"
+            '\n'
+            '\n'
+            'def placeholder_artifacts(manifest):\n'
+            '    """Artifacts still carrying the template\'s all-zero digest.\n'
+            '\n'
+            '    ``extensions/<id>/extension.json`` is a build template: the release tool\n'
+            '    backfills real digests (``artifacts/build_extension.py``) before anything is\n'
+            '    published. Installing the template itself would sail past the plan, then fail\n'
+            '    in digest verification artifact by artifact, so name the problem up front.\n'
+            '    """\n'
+            "    records = [manifest['runtime']['pack'], *manifest['components']]\n"
+            "    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]\n"
+            '\n'
+            '\n'
             'def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,\n'
             '            package_dir=None, workspace=None, replace=False, previews=True, scenes=None,\n'
             '            dry_run=False, report=print, runner=None):\n'
@@ -6704,6 +6804,11 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    Offline installs take artifacts from ``package_dir``; otherwise they are\n'
             '    expected in ``workspace`` (the caller downloads them there first).\n'
             '    """\n'
+            '    placeholders = placeholder_artifacts(manifest)\n'
+            '    if placeholders:\n'
+            '        raise ManifestError(\n'
+            "            'manifest still carries placeholder sha256 (all zeros): ' + ', '.join(placeholders)\n"
+            "            + '; use the channel manifest, or backfill the digests with artifacts/build_extension.py before installing offline')\n"
             "    cli = str(Path(root)/'current/bin/semantic')\n"
             "    config = Path(root)/'configs/semantic-server.yaml'\n"
             '    paths = artifact_paths(manifest, package_dir, workspace)\n'
@@ -6823,7 +6928,8 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "    project = getattr(args, 'project', None)\n"
             "    dry_run = getattr(args, 'dry_run', False)\n"
             "    if action == 'install':\n"
-            '        for name, state, detail in probe_rows(manifest):\n'
+            "        asset_root = getattr(args, 'asset_root', None)\n"
+            "        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):\n"
             '            emit(state, name, detail)\n'
             '        for port, detail in port_warnings(manifest):\n'
             "            emit('warn', f'Port {port}', detail)\n"
@@ -6832,7 +6938,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '        if not package_dir and not dry_run:\n'
             '            workspace.mkdir(parents=True, exist_ok=True)\n'
             "        install(manifest, root, project=project, robot=getattr(args, 'robot', None),\n"
-            "                asset_root=getattr(args, 'asset_root', None),\n"
+            '                asset_root=asset_root,\n'
             "                accept_license=getattr(args, 'accept_license', None),\n"
             '                package_dir=package_dir, workspace=workspace,\n'
             "                replace=getattr(args, 'replace', False),\n"

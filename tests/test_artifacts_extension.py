@@ -424,6 +424,32 @@ class ProbeTests(unittest.TestCase):
         self.assertEqual(rows[0][1], 'warn')
         self.assertIn('docker 未安装', rows[0][2])
 
+    def test_asset_root_placeholder_is_substituted(self):
+        parsed = self.parsed([
+            {'kind': 'probe', 'text': '磁盘', 'check': 'df -B1G --output=avail {asset_root}'},
+        ])
+        seen = []
+
+        def runner(command):
+            seen.append(command)
+            return (0, '120')
+
+        rows = extension.probe_rows(parsed, runner=runner, values={'asset_root': '/data/assets'})
+        self.assertEqual(rows, [('磁盘', 'ok', '120')])
+        self.assertEqual(seen, ['df -B1G --output=avail /data/assets'])
+
+    def test_asset_root_placeholder_without_a_value_skips(self):
+        parsed = self.parsed([
+            {'kind': 'probe', 'text': '磁盘', 'check': 'df -B1G --output=avail {asset_root}'},
+        ])
+
+        def never(command):
+            raise AssertionError('缺失占位值时不应执行命令')
+
+        rows = extension.probe_rows(parsed, runner=never)
+        self.assertEqual(rows[0][1], 'skip')
+        self.assertIn('--asset-root', rows[0][2])
+
 
 class PortWarningTests(unittest.TestCase):
     """Port collisions are a warning, never a failed install."""
@@ -492,6 +518,25 @@ class PlanTests(unittest.TestCase):
         plan = extension.uninstall_plan(parsed, 'semantic', 'cfg', 'proj')
         self.assertEqual(plan[0][0], 'robot_skill/vla-manipulation')
         self.assertEqual(plan[-1][1][1:4], ['uninstall', 'runtime', '--id'])
+
+
+class PlaceholderDigestTests(unittest.TestCase):
+    """The build template must never be installed straight from the repo."""
+
+    def template(self):
+        value = json.loads(manifest())
+        for artifact in [value['runtime']['pack'], *value['components']]:
+            artifact['sha256'] = '0'*64
+        return extension.parse(json.dumps(value))
+
+    def test_placeholder_digests_are_named(self):
+        self.assertEqual(len(extension.placeholder_artifacts(self.template())), 6)
+        self.assertEqual(extension.placeholder_artifacts(extension.parse(manifest())), [])
+
+    def test_install_refuses_a_template_manifest(self):
+        with self.assertRaisesRegex(extension.ManifestError, 'sha256 仍是占位值'):
+            extension.install(self.template(), Path('/tmp/none'), project='proj-1',
+                              dry_run=True, report=lambda *row: None)
 
 
 class OfflineInstallTests(unittest.TestCase):
@@ -593,6 +638,14 @@ class CheckedInManifestTests(unittest.TestCase):
         self.assertTrue(probes)
         self.assertTrue(all(item.get('check') for item in probes))
         self.assertTrue(parsed['license'].strip())
+
+    def test_isaac_disk_probe_targets_the_asset_root_not_the_cwd(self):
+        parsed = extension.parse((ROOT/'extensions/isaac/extension.json').read_text())
+        disk = [item for item in parsed['prerequisites']
+                if item['kind'] == 'probe' and '50 GiB' in item['text']]
+        self.assertEqual(len(disk), 1)
+        self.assertIn('{asset_root}', disk[0]['check'])
+        self.assertNotIn('avail .', disk[0]['check'])
 
     def test_isaac_manifest_requires_asset_root_content(self):
         parsed = extension.parse((ROOT/'extensions/isaac/extension.json').read_text())

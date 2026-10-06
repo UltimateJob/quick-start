@@ -259,6 +259,12 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 - 装之前先确认第 1.3 步的镜像、第 1.4 步的策略服务都已就绪；`probe` 失败只告警、不阻断。
 - 扩展 Runtime 包声明的 `license` 由清单自动带上（`--accept-license behavior-assets`）。
 - 固定顺序 Runtime → 场景 → 运行支持 → Ability → 模型 → Skill。
+- 离线安装（`--extension-package-dir` 或 `--extension-manifest`）必须用**回填过摘要**的清单：
+  发布通道的产物，或 `artifacts/build_extension.py` 产出的 staging。仓库里的
+  `extensions/isaac/extension.json` 是**构建模板**，`sha256` 全是 0；安装器会直接拒绝它并提示
+  「清单里的 sha256 仍是占位值」，不会先下载再逐个校验失败。
+- 磁盘探测用本次的 `--asset-root` 求值：清单里的 `check` 写 `{asset_root}`，安装器替换后执行；
+  没传 `--asset-root` 时该条报告为 `skip`（不再拿当前目录当资产盘）。
 
 已装好基础环境时：
 
@@ -370,6 +376,10 @@ semantic-robot-instance start --config /etc/semantic/robots/<robot-id>/robot-dep
 | Ability 段 | `18100–18199` | `semantic-server.yaml` 的 `ability_port_first` / `ability_port_last` |
 | π0.5 策略服务 | `20080` | 1.4 的 `--port`，必须等于模型配置的 `endpoint` |
 | LIBERO Runtime | `8092` | LIBERO 清单（与 BEHAVIOR 可并存） |
+
+预编译安装默认 HTTP/WS 为 `8034` / `8035`；**源码编译**（`build.sh` / `semantic_installer.py`）路线
+默认是 `8080` / `8081`（`SERVER_HTTP` / `SERVER_WS`）。两套只是默认值不同，已有实例一律保留其
+**已配置**的端口，不会因默认值更新而迁移；对照端口时先分清装的是哪一种。
 
 同机并存 BEHAVIOR 与 LIBERO 时，两者默认都落在 `18100–18199`，要给两套环境分配不同端口段，
 否则报 `http server bind ... failed`。

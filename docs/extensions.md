@@ -180,11 +180,16 @@ BEHAVIOR/Isaac 与 LIBERO 不是同一种交付，以下三项**不是可下载�
   { "kind": "probe", "text": "本机已导入引擎镜像且 sha256 与 runtime-settings.json 一致",
     "check": "docker image inspect sha256:<ID>" },
   { "kind": "probe", "text": "asset-root 所在盘可用空间 >= 50 GiB",
-    "check": "df -h <asset-root>" },
+    "check": "test -d \"{asset_root}\" && test \"$(df -B1G --output=avail \"{asset_root}\" 2>/dev/null | tail -1)\" -ge 50" },
   { "kind": "user_action", "text": "数据集需按上游说明单独取得" },
   { "kind": "user_action", "text": "π0.5 策略服务需自行准备（不进镜像与 Ability 环境）" }
 ]
 ```
+
+`check` 命令里可以写 `{asset_root}`：安装器在运行探测前，用本次安装的
+`--asset-root` 值替换它（可选值见 `extension.PROBE_VALUES`）。若清单里写了这个占位符、
+但调用方没有提供 `--asset-root`，该条探测报告为 `skip`（不会拿字面量 `{asset_root}` 去跑
+shell，也不会误报成磁盘不足）。探测命令由安装器提供值、清单不能自带主机路径。
 
 另有两处必须显式声明、否则现场必踩：
 
@@ -276,6 +281,9 @@ TODO（可选，避免两份事实来源漂移）：让 TUI 阶段 8 的产物�
    `extensions` 段固化了版本、tag 与逐产物锚点。清单模板里的 `sha256` 仍是占位，由
    `build_extension.py` 在发布时从真实产物回填；OSS 通道上不可变的
    `extensions/<id>/<version>/extension.json` 已是回填后的真实摘要。
+   安装器不接受这份模板直接落地：`extension.install()` 会先检查每个产物的摘要是否为全 0
+   占位值，是则立刻报 `清单里的 sha256 仍是占位值`，并提示改用发布通道清单或先回填——
+   避免把"计划能打印、下载与校验才逐个失败"的错误留到多 GB 下载之后。
    **已发布（2026-10-05）**：isaac 0.1.0 与 libero 0.1.0 已推送到 OSS 主通道（桶
    `insightos-artifacts`，前缀 `semantic`，对象 `public-read`，匿名可读）。
    GitHub Release 镜像已发到 `insightos-community/quick-start`（tag `ext-isaac-v0.1.0` /
