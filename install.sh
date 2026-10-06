@@ -1043,7 +1043,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'扩展场景 {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\t端口 {port}\t{detail}')
@@ -1051,7 +1052,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start 未启动 Server; 组件安装会因服务未就绪而失败')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)
@@ -1254,8 +1255,19 @@ def install_manager(root, payload):
     if launcher.is_symlink() or (launcher.exists() and launcher.stat().st_nlink != 1):
         raise ValueError('管理入口链接异常')
     python_command = shlex.quote(str(root/'current/python/bin/python3.13')) if platform.system() == 'Darwin' else 'python3'
-    launcher.write_text('#!/bin/sh\nexec '+python_command+' -B '+shlex.quote(str(manager/'installer.py'))+
-                        ' control --root '+shlex.quote(str(root))+' "$@"\n')
+    manager_script = shlex.quote(str(manager/'installer.py'))
+    instance = shlex.quote(str(root))
+    # ``semanticctl extension ...`` is a top-level command, everything else is a
+    # ``control`` action. Forward ``extension`` straight through so the documented
+    # ``semanticctl extension list|show|verify|install|remove`` actually reaches it.
+    launcher.write_text('#!/bin/sh\n'
+                        'case "$1" in\n'
+                        '  extension)\n'
+                        '    shift\n'
+                        '    exec '+python_command+' -B '+manager_script+' extension "$@" --root '+instance+'\n'
+                        '    ;;\n'
+                        'esac\n'
+                        'exec '+python_command+' -B '+manager_script+' control --root '+instance+' "$@"\n')
     launcher.chmod(0o755)
 
 
@@ -2101,6 +2113,7 @@ This module is deliberately dependency-free apart from the standard library and
 
 import hashlib
 import json
+import os
 import shlex
 import socket
 import subprocess
@@ -2128,6 +2141,12 @@ PREREQUISITE_KINDS = ('probe', 'user_action')
 
 MANIFEST_NAME = 'extension.json'
 STABLE_POINTER = 'stable.json'
+
+# Extension ids ``semanticctl extension list`` falls back to when the channel does
+# not publish an ``extensions/index.json`` catalog. The catalog, when present,
+# takes precedence; adding a scene only needs a code change if you want it listed
+# without a catalog.
+KNOWN_EXTENSIONS = ('libero', 'isaac')
 
 # Two channels carry the same immutable artifacts. The manifest and its stable
 # pointer always come from the OSS base; a relative artifact URL is resolved
@@ -2493,12 +2512,38 @@ def render(manifest, base=None):
     return rows
 
 
-def probe_rows(manifest, runner=None):
+# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from
+# the install call, never from the manifest, so a channel manifest cannot smuggle
+# in a host path of its own choosing.
+PROBE_VALUES = ('asset_root',)
+
+
+def render_probe(command, values=None):
+    """Substitute ``{asset_root}``-style tokens into a probe command.
+
+    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs
+    a value the caller did not provide, so ``probe_rows`` can report a skip rather
+    than run a shell command still containing a literal ``{asset_root}``.
+    """
+    values = values or {}
+    missing = [name for name in PROBE_VALUES
+               if '{' + name + '}' in command and not values.get(name)]
+    if missing:
+        return None, missing
+    for name in PROBE_VALUES:
+        if values.get(name):
+            command = command.replace('{' + name + '}', str(values[name]))
+    return command, []
+
+
+def probe_rows(manifest, runner=None, values=None):
     """Run the manifest's ``probe`` steps. Failures warn; nothing raises.
 
     The execution semantics are "skippable but reported": a probe that fails must
     not block the install, or a normal "install the base first, add the image
-    later" order would be impossible.
+    later" order would be impossible. A probe whose command needs a value the
+    caller did not supply (for example a disk check that names ``{asset_root}``
+    while ``--asset-root`` was omitted) is reported as ``skip``.
     """
     runner = runner or run_probe
     rows = []
@@ -2508,6 +2553,11 @@ def probe_rows(manifest, runner=None):
         command = item.get('check')
         if not command:
             rows.append((item['text'], 'skip', '清单未提供 check 命令'))
+            continue
+        command, missing = render_probe(command, values)
+        if command is None:
+            flags = ', '.join('--' + name.replace('_', '-') for name in missing)
+            rows.append((item['text'], 'skip', f'未提供 {flags}，跳过该探测'))
             continue
         try:
             code, output = runner(command)
@@ -2639,9 +2689,7 @@ def plan_commands(manifest, paths, cli, config, project=None, robot=None, asset_
         command = [cli, 'install', str(paths[(component['role'], component['id'])]), '--project', str(project)]
         if component.get('project_default'):
             command.append('--project-default')
-        if component.get('robot_required'):
-            if not robot:
-                raise ManifestError('组件 {} 需要 --robot'.format(component['id']))
+        if component.get('robot_required') and robot:
             command += ['--robot', str(robot)]
         if component['role'] == 'scene_catalog':
             if not previews:
@@ -2651,6 +2699,20 @@ def plan_commands(manifest, paths, cli, config, project=None, robot=None, asset_
                 command += ['--scene', scene]
         plan.append((f"{component['role']}/{component['id']}", command))
     return plan
+
+
+def unbound_skills(manifest, robot):
+    """``robot_required`` components imported without a Robot.
+
+    A fresh install has no Robot yet, so the Skill is imported into the Project
+    and bound later from Studio (Device Center -> Add Pilot -> install on the
+    device page). This mirrors the ``semantic install`` CLI, which imports a
+    Skill without ``--robot`` and reports how to submit the install request.
+    """
+    if robot:
+        return []
+    return [f"{item['role']}/{item['id']}" for item in manifest['components']
+            if item.get('robot_required')]
 
 
 def uninstall_plan(manifest, cli, config, project):
@@ -2684,6 +2746,98 @@ def run_command(command):
     subprocess.run(command, check=True)
 
 
+def instance_state(root):
+    """The installed instance's ``install.json`` (ports, version, readiness)."""
+    return json.loads((Path(root)/'install.json').read_text())
+
+
+def admin_password(root):
+    """The instance's generated admin password; the installer's own credential source."""
+    return json.loads((Path(root)/'configs/secrets.json').read_text())['SEMANTIC_ADMIN_PASSWORD']
+
+
+def http_json(url, token=None, data=None, method=None):
+    """One JSON request against the instance's Server."""
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def server_session(root):
+    """Log in to the instance's own Server and stage per-instance CLI credentials.
+
+    ``semantic install`` authenticates from ``$HOME/.semantic/credentials.json``,
+    which a fresh install never creates. We log in with the instance's admin
+    password and write a private HOME under the instance instead of overwriting
+    the operator's own ``~/.semantic`` credentials; callers run the CLI with it.
+
+    Returns ``(home, server, token)``.
+    """
+    state = instance_state(root)
+    server = f"http://127.0.0.1:{state['http_port']}"
+    try:
+        reply = http_json(server + '/api/v1/auth/login',
+                          data=json.dumps({'username': 'admin',
+                                           'password': admin_password(root)}).encode())
+    except (urllib.error.URLError, OSError) as error:
+        raise ManifestError('组件安装需要 Server 已启动；请先运行 semanticctl start ({})'.format(error)) from None
+    token = reply.get('token')
+    if not token:
+        raise ManifestError('Server 登录未返回 token；请检查 configs/secrets.json 与 Server 状态')
+    home = Path(root)/'cli-home'
+    target = home/'.semantic'/'credentials.json'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({'server': server, 'token': token,
+                                  'expires_at': reply.get('expires_at')}))
+    target.chmod(0o600)
+    return home, server, token
+
+
+def default_project(server, token):
+    """The signed-in user's Default Project, resolved from the instance's Server."""
+    projects = http_json(server + '/api/v1/projects', token).get('projects') or []
+    for project in projects:
+        if project.get('is_default'):
+            return project['id']
+    for project in projects:
+        if (project.get('mode') or '') == 'development':
+            return project['id']
+    raise ManifestError('无法在 Server 上找到可用 Project；请显式传 --project <项目ID>')
+
+
+def cli_environment(root, project, dry_run, report):
+    """``(project, env)`` for the CLI commands: an authenticated per-instance HOME.
+
+    A missing ``--project`` falls back to the Server's Default Project. Dry runs
+    neither log in nor touch the network, so an unset project stays a placeholder.
+    """
+    if dry_run:
+        return (project or '<project-id>'), None
+    home, server, token = server_session(root)
+    if not project:
+        project = default_project(server, token)
+        report('note', 'Project', '未指定 --project，使用默认项目 {}'.format(project))
+    return project, dict(os.environ, HOME=str(home))
+
+
+PLACEHOLDER_SHA256 = '0' * 64
+
+
+def placeholder_artifacts(manifest):
+    """Artifacts still carrying the template's all-zero digest.
+
+    ``extensions/<id>/extension.json`` is a build template: the release tool
+    backfills real digests (``artifacts/build_extension.py``) before anything is
+    published. Installing the template itself would sail past the plan, then fail
+    in digest verification artifact by artifact, so name the problem up front.
+    """
+    records = [manifest['runtime']['pack'], *manifest['components']]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+
+
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
             package_dir=None, workspace=None, replace=False, previews=True, scenes=None,
             dry_run=False, report=print, runner=None):
@@ -2692,13 +2846,20 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
     Offline installs take artifacts from ``package_dir``; otherwise they are
     expected in ``workspace`` (the caller downloads them there first).
     """
-    runner = runner or run_command
+    placeholders = placeholder_artifacts(manifest)
+    if placeholders:
+        raise ManifestError(
+            '清单里的 sha256 仍是占位值 (全 0): ' + ', '.join(placeholders)
+            + '；请改用发布通道的清单，或先用 artifacts/build_extension.py 回填后再离线安装')
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
     paths = artifact_paths(manifest, package_dir, workspace)
+    project, env = cli_environment(root, project, dry_run, report)
+    # Validate the whole plan before downloading: a missing --asset-root or an
+    # unbindable Skill must not cost the operator a multi-gigabyte download.
+    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
+                         accept_license, replace, previews, scenes)
     if dry_run:
-        plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
-                             accept_license, replace, previews, scenes)
         for name, command in plan:
             report('dry-run', name, shell_line(command))
         return plan
@@ -2709,11 +2870,15 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
             path.parent.mkdir(parents=True, exist_ok=True)
             _download(artifact['url'], path)
         stage_artifact(artifact, path)
-    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
-                         accept_license, replace, previews, scenes)
+    if runner is None:
+        runner = lambda command: subprocess.run(command, check=True, env=env)
     for name, command in plan:
         report('run', name, shell_line(command))
         runner(command)
+    unbound = unbound_skills(manifest, robot)
+    if unbound:
+        report('note', 'Robot', '未随包绑定 Robot；到 Web 设备中心「添加 Pilot」后，在设备页安装这些 Skill: '
+               + ', '.join(unbound))
     for item in manifest.get('post_install') or []:
         report('post', item['kind'], item['text'])
     return plan
@@ -2721,10 +2886,12 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
 
 def remove(manifest, root, project, dry_run=False, report=print, runner=None):
     """Uninstall an extension: components first, then the Runtime installation."""
-    runner = runner or run_command
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
+    project, env = cli_environment(root, project, dry_run, report)
     plan = uninstall_plan(manifest, cli, config, project)
+    if runner is None:
+        runner = lambda command: subprocess.run(command, check=True, env=env)
     for name, command in plan:
         report('dry-run' if dry_run else 'run', name, shell_line(command))
         if not dry_run:
@@ -2742,6 +2909,26 @@ def load_manifest_file(path, source='oss', base=None, repo=None):
     return parse(Path(path).read_text(), source=source, base=base, repo=repo)
 
 
+def list_catalog(base):
+    """Known extensions: the channel ``index.json`` when published, else the built-in list."""
+    try:
+        index = http_json(channel_url(base, 'extensions', 'index.json'))
+    except (urllib.error.URLError, OSError, ValueError):
+        index = None
+    rows = []
+    if isinstance(index, dict) and index:
+        for identifier, item in sorted(index.items()):
+            item = item if isinstance(item, dict) else {}
+            version = item.get('version')
+            rows.append((identifier, item.get('title', ''), version if isinstance(version, str) else '?'))
+        return rows
+    for identifier in KNOWN_EXTENSIONS:
+        version = stable_pointer(base, identifier)
+        if version:
+            rows.append((identifier, '', version))
+    return rows
+
+
 def entry(args):
     """``semanticctl extension`` dispatch."""
     action = args.extension_action
@@ -2750,18 +2937,12 @@ def entry(args):
     source = getattr(args, 'source', 'oss')
     if action == 'list':
         base = args.base_url.rstrip('/')
-        try:
-            with urllib.request.urlopen(urllib.request.Request(channel_url(base, 'extensions', 'index.json'),
-                        headers={'Accept': 'application/json'}), timeout=30) as response:
-                index = json.load(response)
-        except (urllib.error.URLError, OSError, ValueError):
-            index = None
-        if not isinstance(index, dict) or not index:
-            print(f'通道 {base} 没有可用的扩展目录 (extensions/index.json)')
+        rows = list_catalog(base)
+        if not rows:
+            print(f'通道 {base} 没有可用的扩展')
             return 1
-        for identifier, item in sorted(index.items()):
-            version = (item or {}).get('version') if isinstance(item, dict) else None
-            print(f"{identifier}\t{(item or {}).get('title', '')}\t{version if isinstance(version, str) else '?'}")
+        for identifier, title, version in rows:
+            print(f"{identifier}\t{title}\t{version}")
         return 0
     if not args.id:
         raise SystemExit(f'extension {action} 需要扩展 id，例如 isaac')
@@ -2787,11 +2968,10 @@ def entry(args):
     if not root:
         raise SystemExit(f'extension {action} 需要 --root <安装根目录>')
     project = getattr(args, 'project', None)
-    if not project:
-        raise SystemExit(f'extension {action} 需要 --project <项目ID>')
     dry_run = getattr(args, 'dry_run', False)
     if action == 'install':
-        for name, state, detail in probe_rows(manifest):
+        asset_root = getattr(args, 'asset_root', None)
+        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):
             emit(state, name, detail)
         for port, detail in port_warnings(manifest):
             emit('warn', f'端口 {port}', detail)
@@ -2800,7 +2980,7 @@ def entry(args):
         if not package_dir and not dry_run:
             workspace.mkdir(parents=True, exist_ok=True)
         install(manifest, root, project=project, robot=getattr(args, 'robot', None),
-                asset_root=getattr(args, 'asset_root', None),
+                asset_root=asset_root,
                 accept_license=getattr(args, 'accept_license', None),
                 package_dir=package_dir, workspace=workspace,
                 replace=getattr(args, 'replace', False),
@@ -2828,7 +3008,7 @@ def register(parser):
     commands.add_argument('--extension-package-dir', dest='extension_package_dir', type=Path,
                           help='离线产物目录；六个产物齐备即完全离线')
     commands.add_argument('--root', type=Path, help='安装根目录（install/remove 必填）')
-    commands.add_argument('--project', help='目标 Project ID')
+    commands.add_argument('--project', help='目标 Project ID；缺省用当前用户的默认项目')
     commands.add_argument('--robot', help='robot_required 组件要安装到的 Robot ID')
     commands.add_argument('--asset-root', dest='asset_root', help='Runtime 的原生资产目录')
     commands.add_argument('--accept-license', dest='accept_license', help='确认 Runtime 包声明的许可')

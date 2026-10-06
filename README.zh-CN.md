@@ -116,10 +116,13 @@ python3 semantic_installer.py --list
 
 上面的基础安装只准备基础工作区。仿真场景是**独立发布、旁挂于不可变基础制品之外**的产物，由安装器在基础环境装好之后按需拉取。目前有两个场景：
 
-| 场景 | `--extension` | 内容 |
-|---|---|---|
-| LIBERO | `libero` | robosuite 1.4 + Franka + SmolVLA；六个产物合计约 11.5 GB |
-| BEHAVIOR（Isaac Sim） | `isaac` | OmniGibson 3.9.2 + R1 Pro + π0.5；六个产物合计约 99 MB（最大约 52 MB），另需 31 GB 引擎镜像与自行取得的授权数据集 |
+| 场景 | `--extension` | 内容 | 用户操作手册 |
+|---|---|---|---|
+| LIBERO | `libero` | robosuite 1.4 + Franka + SmolVLA；六个产物合计约 11.5 GB | [extensions/libero](extensions/libero/README.zh-CN.md) |
+| BEHAVIOR（Isaac Sim） | `isaac` | OmniGibson 3.9.2 + R1 Pro + π0.5；六个产物合计约 99 MB（最大约 52 MB），另需 31 GB 引擎镜像与自行取得的授权数据集 | [extensions/isaac](extensions/isaac/README.zh-CN.md) |
+
+每个场景一份**用户操作手册**，按同一条主线走：环境准备 → 安装到框架 → 在 Web 上复刻（含红框截图）。
+总入口与目录约定见 **[`extensions/README.zh-CN.md`](extensions/README.zh-CN.md)**。
 
 在同一个入口脚本上加 `--extension <id>`，基础环境装完后自动继续：
 
@@ -145,11 +148,11 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 
 有些前提装不进来，安装器会探测并提示（探测失败只告警、不阻断）：
 
-- BEHAVIOR 需要本地 Docker 已导入 `behavior:v3.9.2` 引擎镜像（31.1 GB）、授权数据集、LLM 密钥，以及在机器人四件套之前启动的 π0.5 策略服务（端口 20080）；需要独显，预览至少 6144 MiB 空闲显存。
+- BEHAVIOR 需要本地 Docker 已导入 `behavior:v3.9.2` 引擎镜像（31.1 GB）、授权数据集、LLM 密钥，以及在机器人四件套之前启动的 π0.5 策略服务（端口 20080）；需要独显，预览至少 6144 MiB 空闲显存。完整的准备步骤（导入或自建镜像、取得数据集、启动 π0.5）见 [BEHAVIOR 用户操作手册](extensions/isaac/README.zh-CN.md) 第 1 节。
 - 端口：BEHAVIOR 用 Runtime `18090`、Ability `18100-18199`、策略服务 `20080`；LIBERO 用 `18100-18199`，同机并存要分配不同端口段。
 - 装完要到 Web「场景配置 → 添加兼容场景」，并把 Ability 与模型绑定到机器人——安装只把场景注册到场景目录。
 
-安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.md)，各场景说明见 [`extensions/libero`](extensions/libero/README.md) 与 [`extensions/isaac`](extensions/isaac/README.md)；源码编译路径见 TUI 阶段 8。
+安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.md)，场景总入口见 [`extensions`](extensions/README.zh-CN.md)，各场景操作手册见 [LIBERO](extensions/libero/README.zh-CN.md) 与 [BEHAVIOR](extensions/isaac/README.zh-CN.md)；源码编译路径见 TUI 阶段 8。
 
 ## 🛠 源码构建
 

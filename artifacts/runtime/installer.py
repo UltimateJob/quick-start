@@ -598,7 +598,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'扩展场景 {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\t端口 {port}\t{detail}')
@@ -606,7 +607,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start 未启动 Server; 组件安装会因服务未就绪而失败')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)
@@ -809,8 +810,19 @@ def install_manager(root, payload):
     if launcher.is_symlink() or (launcher.exists() and launcher.stat().st_nlink != 1):
         raise ValueError('管理入口链接异常')
     python_command = shlex.quote(str(root/'current/python/bin/python3.13')) if platform.system() == 'Darwin' else 'python3'
-    launcher.write_text('#!/bin/sh\nexec '+python_command+' -B '+shlex.quote(str(manager/'installer.py'))+
-                        ' control --root '+shlex.quote(str(root))+' "$@"\n')
+    manager_script = shlex.quote(str(manager/'installer.py'))
+    instance = shlex.quote(str(root))
+    # ``semanticctl extension ...`` is a top-level command, everything else is a
+    # ``control`` action. Forward ``extension`` straight through so the documented
+    # ``semanticctl extension list|show|verify|install|remove`` actually reaches it.
+    launcher.write_text('#!/bin/sh\n'
+                        'case "$1" in\n'
+                        '  extension)\n'
+                        '    shift\n'
+                        '    exec '+python_command+' -B '+manager_script+' extension "$@" --root '+instance+'\n'
+                        '    ;;\n'
+                        'esac\n'
+                        'exec '+python_command+' -B '+manager_script+' control --root '+instance+' "$@"\n')
     launcher.chmod(0o755)
 
 

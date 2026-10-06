@@ -1044,7 +1044,8 @@ def install_extension(root, a):
     if not package_dir and not dry_run:
         workspace.mkdir(parents=True, exist_ok=True)
     print(f'Extension scene {manifest["id"]}: {manifest["title"]} ({manifest["version"]})')
-    for name, state, detail in extension.probe_rows(manifest):
+    asset_root = getattr(a, 'extension_asset_root', None)
+    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):
         print(f'{state}\t{name}\t{detail}')
     for port, detail in extension.port_warnings(manifest):
         print(f'warn\tPort {port}\t{detail}')
@@ -1052,7 +1053,7 @@ def install_extension(root, a):
         print('note\tServer\t--no-start left the Server stopped; component installs fail until it runs')
     return extension.install(manifest, root, project=getattr(a, 'extension_project', None),
                              robot=getattr(a, 'extension_robot', None),
-                             asset_root=getattr(a, 'extension_asset_root', None),
+                             asset_root=asset_root,
                              accept_license=getattr(a, 'accept_license', None),
                              package_dir=package_dir, workspace=workspace,
                              replace=True, dry_run=dry_run)
@@ -1255,8 +1256,19 @@ def install_manager(root, payload):
     if launcher.is_symlink() or (launcher.exists() and launcher.stat().st_nlink != 1):
         raise ValueError('Unsafe management launcher links')
     python_command = shlex.quote(str(root/'current/python/bin/python3.13')) if platform.system() == 'Darwin' else 'python3'
-    launcher.write_text('#!/bin/sh\nexec '+python_command+' -B '+shlex.quote(str(manager/'installer.py'))+
-                        ' control --root '+shlex.quote(str(root))+' "$@"\n')
+    manager_script = shlex.quote(str(manager/'installer.py'))
+    instance = shlex.quote(str(root))
+    # ``semanticctl extension ...`` is a top-level command, everything else is a
+    # ``control`` action. Forward ``extension`` straight through so the documented
+    # ``semanticctl extension list|show|verify|install|remove`` actually reaches it.
+    launcher.write_text('#!/bin/sh\n'
+                        'case "$1" in\n'
+                        '  extension)\n'
+                        '    shift\n'
+                        '    exec '+python_command+' -B '+manager_script+' extension "$@" --root '+instance+'\n'
+                        '    ;;\n'
+                        'esac\n'
+                        'exec '+python_command+' -B '+manager_script+' control --root '+instance+' "$@"\n')
     launcher.chmod(0o755)
 
 
@@ -2102,6 +2114,7 @@ This module is deliberately dependency-free apart from the standard library and
 
 import hashlib
 import json
+import os
 import shlex
 import socket
 import subprocess
@@ -2129,6 +2142,12 @@ PREREQUISITE_KINDS = ('probe', 'user_action')
 
 MANIFEST_NAME = 'extension.json'
 STABLE_POINTER = 'stable.json'
+
+# Extension ids ``semanticctl extension list`` falls back to when the channel does
+# not publish an ``extensions/index.json`` catalog. The catalog, when present,
+# takes precedence; adding a scene only needs a code change if you want it listed
+# without a catalog.
+KNOWN_EXTENSIONS = ('libero', 'isaac')
 
 # Two channels carry the same immutable artifacts. The manifest and its stable
 # pointer always come from the OSS base; a relative artifact URL is resolved
@@ -2494,12 +2513,38 @@ def render(manifest, base=None):
     return rows
 
 
-def probe_rows(manifest, runner=None):
+# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from
+# the install call, never from the manifest, so a channel manifest cannot smuggle
+# in a host path of its own choosing.
+PROBE_VALUES = ('asset_root',)
+
+
+def render_probe(command, values=None):
+    """Substitute ``{asset_root}``-style tokens into a probe command.
+
+    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs
+    a value the caller did not provide, so ``probe_rows`` can report a skip rather
+    than run a shell command still containing a literal ``{asset_root}``.
+    """
+    values = values or {}
+    missing = [name for name in PROBE_VALUES
+               if '{' + name + '}' in command and not values.get(name)]
+    if missing:
+        return None, missing
+    for name in PROBE_VALUES:
+        if values.get(name):
+            command = command.replace('{' + name + '}', str(values[name]))
+    return command, []
+
+
+def probe_rows(manifest, runner=None, values=None):
     """Run the manifest's ``probe`` steps. Failures warn; nothing raises.
 
     The execution semantics are "skippable but reported": a probe that fails must
     not block the install, or a normal "install the base first, add the image
-    later" order would be impossible.
+    later" order would be impossible. A probe whose command needs a value the
+    caller did not supply (for example a disk check that names ``{asset_root}``
+    while ``--asset-root`` was omitted) is reported as ``skip``.
     """
     runner = runner or run_probe
     rows = []
@@ -2509,6 +2554,11 @@ def probe_rows(manifest, runner=None):
         command = item.get('check')
         if not command:
             rows.append((item['text'], 'skip', 'The manifest declares no check command'))
+            continue
+        command, missing = render_probe(command, values)
+        if command is None:
+            flags = ', '.join('--' + name.replace('_', '-') for name in missing)
+            rows.append((item['text'], 'skip', f'no {flags} given; probe skipped'))
             continue
         try:
             code, output = runner(command)
@@ -2640,9 +2690,7 @@ def plan_commands(manifest, paths, cli, config, project=None, robot=None, asset_
         command = [cli, 'install', str(paths[(component['role'], component['id'])]), '--project', str(project)]
         if component.get('project_default'):
             command.append('--project-default')
-        if component.get('robot_required'):
-            if not robot:
-                raise ManifestError('Component {} requires --robot'.format(component['id']))
+        if component.get('robot_required') and robot:
             command += ['--robot', str(robot)]
         if component['role'] == 'scene_catalog':
             if not previews:
@@ -2652,6 +2700,20 @@ def plan_commands(manifest, paths, cli, config, project=None, robot=None, asset_
                 command += ['--scene', scene]
         plan.append((f"{component['role']}/{component['id']}", command))
     return plan
+
+
+def unbound_skills(manifest, robot):
+    """``robot_required`` components imported without a Robot.
+
+    A fresh install has no Robot yet, so the Skill is imported into the Project
+    and bound later from Studio (Device Center -> Add Pilot -> install on the
+    device page). This mirrors the ``semantic install`` CLI, which imports a
+    Skill without ``--robot`` and reports how to submit the install request.
+    """
+    if robot:
+        return []
+    return [f"{item['role']}/{item['id']}" for item in manifest['components']
+            if item.get('robot_required')]
 
 
 def uninstall_plan(manifest, cli, config, project):
@@ -2685,6 +2747,98 @@ def run_command(command):
     subprocess.run(command, check=True)
 
 
+def instance_state(root):
+    """The installed instance's ``install.json`` (ports, version, readiness)."""
+    return json.loads((Path(root)/'install.json').read_text())
+
+
+def admin_password(root):
+    """The instance's generated admin password; the installer's own credential source."""
+    return json.loads((Path(root)/'configs/secrets.json').read_text())['SEMANTIC_ADMIN_PASSWORD']
+
+
+def http_json(url, token=None, data=None, method=None):
+    """One JSON request against the instance's Server."""
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def server_session(root):
+    """Log in to the instance's own Server and stage per-instance CLI credentials.
+
+    ``semantic install`` authenticates from ``$HOME/.semantic/credentials.json``,
+    which a fresh install never creates. We log in with the instance's admin
+    password and write a private HOME under the instance instead of overwriting
+    the operator's own ``~/.semantic`` credentials; callers run the CLI with it.
+
+    Returns ``(home, server, token)``.
+    """
+    state = instance_state(root)
+    server = f"http://127.0.0.1:{state['http_port']}"
+    try:
+        reply = http_json(server + '/api/v1/auth/login',
+                          data=json.dumps({'username': 'admin',
+                                           'password': admin_password(root)}).encode())
+    except (urllib.error.URLError, OSError) as error:
+        raise ManifestError('Component installs need a running Server; start it with semanticctl start ({})'.format(error)) from None
+    token = reply.get('token')
+    if not token:
+        raise ManifestError('Server login returned no token; check configs/secrets.json and the Server state')
+    home = Path(root)/'cli-home'
+    target = home/'.semantic'/'credentials.json'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({'server': server, 'token': token,
+                                  'expires_at': reply.get('expires_at')}))
+    target.chmod(0o600)
+    return home, server, token
+
+
+def default_project(server, token):
+    """The signed-in user's Default Project, resolved from the instance's Server."""
+    projects = http_json(server + '/api/v1/projects', token).get('projects') or []
+    for project in projects:
+        if project.get('is_default'):
+            return project['id']
+    for project in projects:
+        if (project.get('mode') or '') == 'development':
+            return project['id']
+    raise ManifestError('No usable Project on the Server; pass --project <project-id> explicitly')
+
+
+def cli_environment(root, project, dry_run, report):
+    """``(project, env)`` for the CLI commands: an authenticated per-instance HOME.
+
+    A missing ``--project`` falls back to the Server's Default Project. Dry runs
+    neither log in nor touch the network, so an unset project stays a placeholder.
+    """
+    if dry_run:
+        return (project or '<project-id>'), None
+    home, server, token = server_session(root)
+    if not project:
+        project = default_project(server, token)
+        report('note', 'Project', 'No --project given; using the Default Project {}'.format(project))
+    return project, dict(os.environ, HOME=str(home))
+
+
+PLACEHOLDER_SHA256 = '0' * 64
+
+
+def placeholder_artifacts(manifest):
+    """Artifacts still carrying the template's all-zero digest.
+
+    ``extensions/<id>/extension.json`` is a build template: the release tool
+    backfills real digests (``artifacts/build_extension.py``) before anything is
+    published. Installing the template itself would sail past the plan, then fail
+    in digest verification artifact by artifact, so name the problem up front.
+    """
+    records = [manifest['runtime']['pack'], *manifest['components']]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+
+
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
             package_dir=None, workspace=None, replace=False, previews=True, scenes=None,
             dry_run=False, report=print, runner=None):
@@ -2693,13 +2847,20 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
     Offline installs take artifacts from ``package_dir``; otherwise they are
     expected in ``workspace`` (the caller downloads them there first).
     """
-    runner = runner or run_command
+    placeholders = placeholder_artifacts(manifest)
+    if placeholders:
+        raise ManifestError(
+            'manifest still carries placeholder sha256 (all zeros): ' + ', '.join(placeholders)
+            + '; use the channel manifest, or backfill the digests with artifacts/build_extension.py before installing offline')
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
     paths = artifact_paths(manifest, package_dir, workspace)
+    project, env = cli_environment(root, project, dry_run, report)
+    # Validate the whole plan before downloading: a missing --asset-root or an
+    # unbindable Skill must not cost the operator a multi-gigabyte download.
+    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
+                         accept_license, replace, previews, scenes)
     if dry_run:
-        plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
-                             accept_license, replace, previews, scenes)
         for name, command in plan:
             report('dry-run', name, shell_line(command))
         return plan
@@ -2710,11 +2871,15 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
             path.parent.mkdir(parents=True, exist_ok=True)
             _download(artifact['url'], path)
         stage_artifact(artifact, path)
-    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,
-                         accept_license, replace, previews, scenes)
+    if runner is None:
+        runner = lambda command: subprocess.run(command, check=True, env=env)
     for name, command in plan:
         report('run', name, shell_line(command))
         runner(command)
+    unbound = unbound_skills(manifest, robot)
+    if unbound:
+        report('note', 'Robot', 'No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: '
+               + ', '.join(unbound))
     for item in manifest.get('post_install') or []:
         report('post', item['kind'], item['text'])
     return plan
@@ -2722,10 +2887,12 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
 
 def remove(manifest, root, project, dry_run=False, report=print, runner=None):
     """Uninstall an extension: components first, then the Runtime installation."""
-    runner = runner or run_command
     cli = str(Path(root)/'current/bin/semantic')
     config = Path(root)/'configs/semantic-server.yaml'
+    project, env = cli_environment(root, project, dry_run, report)
     plan = uninstall_plan(manifest, cli, config, project)
+    if runner is None:
+        runner = lambda command: subprocess.run(command, check=True, env=env)
     for name, command in plan:
         report('dry-run' if dry_run else 'run', name, shell_line(command))
         if not dry_run:
@@ -2743,6 +2910,26 @@ def load_manifest_file(path, source='oss', base=None, repo=None):
     return parse(Path(path).read_text(), source=source, base=base, repo=repo)
 
 
+def list_catalog(base):
+    """Known extensions: the channel ``index.json`` when published, else the built-in list."""
+    try:
+        index = http_json(channel_url(base, 'extensions', 'index.json'))
+    except (urllib.error.URLError, OSError, ValueError):
+        index = None
+    rows = []
+    if isinstance(index, dict) and index:
+        for identifier, item in sorted(index.items()):
+            item = item if isinstance(item, dict) else {}
+            version = item.get('version')
+            rows.append((identifier, item.get('title', ''), version if isinstance(version, str) else '?'))
+        return rows
+    for identifier in KNOWN_EXTENSIONS:
+        version = stable_pointer(base, identifier)
+        if version:
+            rows.append((identifier, '', version))
+    return rows
+
+
 def entry(args):
     """``semanticctl extension`` dispatch."""
     action = args.extension_action
@@ -2751,18 +2938,12 @@ def entry(args):
     source = getattr(args, 'source', 'oss')
     if action == 'list':
         base = args.base_url.rstrip('/')
-        try:
-            with urllib.request.urlopen(urllib.request.Request(channel_url(base, 'extensions', 'index.json'),
-                        headers={'Accept': 'application/json'}), timeout=30) as response:
-                index = json.load(response)
-        except (urllib.error.URLError, OSError, ValueError):
-            index = None
-        if not isinstance(index, dict) or not index:
-            print(f'The channel {base} has no extension catalog (extensions/index.json)')
+        rows = list_catalog(base)
+        if not rows:
+            print(f'The channel {base} has no available extensions')
             return 1
-        for identifier, item in sorted(index.items()):
-            version = (item or {}).get('version') if isinstance(item, dict) else None
-            print(f"{identifier}\t{(item or {}).get('title', '')}\t{version if isinstance(version, str) else '?'}")
+        for identifier, title, version in rows:
+            print(f"{identifier}\t{title}\t{version}")
         return 0
     if not args.id:
         raise SystemExit(f'extension {action} needs an extension id, for example isaac')
@@ -2788,11 +2969,10 @@ def entry(args):
     if not root:
         raise SystemExit(f'extension {action} needs --root <install root>')
     project = getattr(args, 'project', None)
-    if not project:
-        raise SystemExit(f'extension {action} needs --project <project id>')
     dry_run = getattr(args, 'dry_run', False)
     if action == 'install':
-        for name, state, detail in probe_rows(manifest):
+        asset_root = getattr(args, 'asset_root', None)
+        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):
             emit(state, name, detail)
         for port, detail in port_warnings(manifest):
             emit('warn', f'Port {port}', detail)
@@ -2801,7 +2981,7 @@ def entry(args):
         if not package_dir and not dry_run:
             workspace.mkdir(parents=True, exist_ok=True)
         install(manifest, root, project=project, robot=getattr(args, 'robot', None),
-                asset_root=getattr(args, 'asset_root', None),
+                asset_root=asset_root,
                 accept_license=getattr(args, 'accept_license', None),
                 package_dir=package_dir, workspace=workspace,
                 replace=getattr(args, 'replace', False),
@@ -2829,7 +3009,7 @@ def register(parser):
     commands.add_argument('--extension-package-dir', dest='extension_package_dir', type=Path,
                           help='Offline artifact directory; all six artifacts make it fully offline')
     commands.add_argument('--root', type=Path, help='Install root (required for install/remove)')
-    commands.add_argument('--project', help='Target Project ID')
+    commands.add_argument('--project', help='Target Project ID; defaults to the signed-in user Default Project')
     commands.add_argument('--robot', help='Robot ID that robot_required components install onto')
     commands.add_argument('--asset-root', dest='asset_root', help='Native asset root for the Runtime')
     commands.add_argument('--accept-license', dest='accept_license', help='Accept the license declared by the Runtime pack')
@@ -4821,7 +5001,8 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    if not package_dir and not dry_run:\n'
             '        workspace.mkdir(parents=True, exist_ok=True)\n'
             '    print(f\'Extension scene {manifest["id"]}: {manifest["title"]} ({manifest["version"]})\')\n'
-            '    for name, state, detail in extension.probe_rows(manifest):\n'
+            "    asset_root = getattr(a, 'extension_asset_root', None)\n"
+            "    for name, state, detail in extension.probe_rows(manifest, values={'asset_root': asset_root}):\n"
             "        print(f'{state}\\t{name}\\t{detail}')\n"
             '    for port, detail in extension.port_warnings(manifest):\n'
             "        print(f'warn\\tPort {port}\\t{detail}')\n"
@@ -4829,7 +5010,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        print('note\\tServer\\t--no-start left the Server stopped; component installs fail until it runs')\n"
             "    return extension.install(manifest, root, project=getattr(a, 'extension_project', None),\n"
             "                             robot=getattr(a, 'extension_robot', None),\n"
-            "                             asset_root=getattr(a, 'extension_asset_root', None),\n"
+            '                             asset_root=asset_root,\n'
             "                             accept_license=getattr(a, 'accept_license', None),\n"
             '                             package_dir=package_dir, workspace=workspace,\n'
             '                             replace=True, dry_run=dry_run)\n'
@@ -5032,8 +5213,19 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    if launcher.is_symlink() or (launcher.exists() and launcher.stat().st_nlink != 1):\n'
             "        raise ValueError('Unsafe management launcher links')\n"
             "    python_command = shlex.quote(str(root/'current/python/bin/python3.13')) if platform.system() == 'Darwin' else 'python3'\n"
-            "    launcher.write_text('#!/bin/sh\\nexec '+python_command+' -B '+shlex.quote(str(manager/'installer.py'))+\n"
-            '                        \' control --root \'+shlex.quote(str(root))+\' "$@"\\n\')\n'
+            "    manager_script = shlex.quote(str(manager/'installer.py'))\n"
+            '    instance = shlex.quote(str(root))\n'
+            '    # ``semanticctl extension ...`` is a top-level command, everything else is a\n'
+            '    # ``control`` action. Forward ``extension`` straight through so the documented\n'
+            '    # ``semanticctl extension list|show|verify|install|remove`` actually reaches it.\n'
+            "    launcher.write_text('#!/bin/sh\\n'\n"
+            '                        \'case "$1" in\\n\'\n'
+            "                        '  extension)\\n'\n"
+            "                        '    shift\\n'\n"
+            '                        \'    exec \'+python_command+\' -B \'+manager_script+\' extension "$@" --root \'+instance+\'\\n\'\n'
+            "                        '    ;;\\n'\n"
+            "                        'esac\\n'\n"
+            '                        \'exec \'+python_command+\' -B \'+manager_script+\' control --root \'+instance+\' "$@"\\n\')\n'
             '    launcher.chmod(0o755)\n'
             '\n'
             '\n'
@@ -5879,6 +6071,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             'import hashlib\n'
             'import json\n'
+            'import os\n'
             'import shlex\n'
             'import socket\n'
             'import subprocess\n'
@@ -5906,6 +6099,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             "MANIFEST_NAME = 'extension.json'\n"
             "STABLE_POINTER = 'stable.json'\n"
+            '\n'
+            '# Extension ids ``semanticctl extension list`` falls back to when the channel does\n'
+            '# not publish an ``extensions/index.json`` catalog. The catalog, when present,\n'
+            '# takes precedence; adding a scene only needs a code change if you want it listed\n'
+            '# without a catalog.\n'
+            "KNOWN_EXTENSIONS = ('libero', 'isaac')\n"
             '\n'
             '# Two channels carry the same immutable artifacts. The manifest and its stable\n'
             '# pointer always come from the OSS base; a relative artifact URL is resolved\n'
@@ -6271,12 +6470,38 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    return rows\n'
             '\n'
             '\n'
-            'def probe_rows(manifest, runner=None):\n'
+            '# Values a ``prerequisites[].check`` may interpolate as ``{name}``. They come from\n'
+            '# the install call, never from the manifest, so a channel manifest cannot smuggle\n'
+            '# in a host path of its own choosing.\n'
+            "PROBE_VALUES = ('asset_root',)\n"
+            '\n'
+            '\n'
+            'def render_probe(command, values=None):\n'
+            '    """Substitute ``{asset_root}``-style tokens into a probe command.\n'
+            '\n'
+            '    Returns ``(command, missing)``. ``command`` is ``None`` when the command needs\n'
+            '    a value the caller did not provide, so ``probe_rows`` can report a skip rather\n'
+            '    than run a shell command still containing a literal ``{asset_root}``.\n'
+            '    """\n'
+            '    values = values or {}\n'
+            '    missing = [name for name in PROBE_VALUES\n'
+            "               if '{' + name + '}' in command and not values.get(name)]\n"
+            '    if missing:\n'
+            '        return None, missing\n'
+            '    for name in PROBE_VALUES:\n'
+            '        if values.get(name):\n'
+            "            command = command.replace('{' + name + '}', str(values[name]))\n"
+            '    return command, []\n'
+            '\n'
+            '\n'
+            'def probe_rows(manifest, runner=None, values=None):\n'
             '    """Run the manifest\'s ``probe`` steps. Failures warn; nothing raises.\n'
             '\n'
             '    The execution semantics are "skippable but reported": a probe that fails must\n'
             '    not block the install, or a normal "install the base first, add the image\n'
-            '    later" order would be impossible.\n'
+            '    later" order would be impossible. A probe whose command needs a value the\n'
+            '    caller did not supply (for example a disk check that names ``{asset_root}``\n'
+            '    while ``--asset-root`` was omitted) is reported as ``skip``.\n'
             '    """\n'
             '    runner = runner or run_probe\n'
             '    rows = []\n'
@@ -6286,6 +6511,11 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        command = item.get('check')\n"
             '        if not command:\n'
             "            rows.append((item['text'], 'skip', 'The manifest declares no check command'))\n"
+            '            continue\n'
+            '        command, missing = render_probe(command, values)\n'
+            '        if command is None:\n'
+            "            flags = ', '.join('--' + name.replace('_', '-') for name in missing)\n"
+            "            rows.append((item['text'], 'skip', f'no {flags} given; probe skipped'))\n"
             '            continue\n'
             '        try:\n'
             '            code, output = runner(command)\n'
@@ -6417,9 +6647,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        command = [cli, 'install', str(paths[(component['role'], component['id'])]), '--project', str(project)]\n"
             "        if component.get('project_default'):\n"
             "            command.append('--project-default')\n"
-            "        if component.get('robot_required'):\n"
-            '            if not robot:\n'
-            "                raise ManifestError('Component {} requires --robot'.format(component['id']))\n"
+            "        if component.get('robot_required') and robot:\n"
             "            command += ['--robot', str(robot)]\n"
             "        if component['role'] == 'scene_catalog':\n"
             '            if not previews:\n'
@@ -6429,6 +6657,20 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "                command += ['--scene', scene]\n"
             '        plan.append((f"{component[\'role\']}/{component[\'id\']}", command))\n'
             '    return plan\n'
+            '\n'
+            '\n'
+            'def unbound_skills(manifest, robot):\n'
+            '    """``robot_required`` components imported without a Robot.\n'
+            '\n'
+            '    A fresh install has no Robot yet, so the Skill is imported into the Project\n'
+            '    and bound later from Studio (Device Center -> Add Pilot -> install on the\n'
+            '    device page). This mirrors the ``semantic install`` CLI, which imports a\n'
+            '    Skill without ``--robot`` and reports how to submit the install request.\n'
+            '    """\n'
+            '    if robot:\n'
+            '        return []\n'
+            '    return [f"{item[\'role\']}/{item[\'id\']}" for item in manifest[\'components\']\n'
+            "            if item.get('robot_required')]\n"
             '\n'
             '\n'
             'def uninstall_plan(manifest, cli, config, project):\n'
@@ -6462,6 +6704,98 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    subprocess.run(command, check=True)\n'
             '\n'
             '\n'
+            'def instance_state(root):\n'
+            '    """The installed instance\'s ``install.json`` (ports, version, readiness)."""\n'
+            "    return json.loads((Path(root)/'install.json').read_text())\n"
+            '\n'
+            '\n'
+            'def admin_password(root):\n'
+            '    """The instance\'s generated admin password; the installer\'s own credential source."""\n'
+            "    return json.loads((Path(root)/'configs/secrets.json').read_text())['SEMANTIC_ADMIN_PASSWORD']\n"
+            '\n'
+            '\n'
+            'def http_json(url, token=None, data=None, method=None):\n'
+            '    """One JSON request against the instance\'s Server."""\n'
+            "    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}\n"
+            '    if token:\n'
+            "        headers['Authorization'] = 'Bearer ' + token\n"
+            '    request = urllib.request.Request(url, data=data, headers=headers, method=method)\n'
+            '    with urllib.request.urlopen(request, timeout=30) as response:\n'
+            '        return json.load(response)\n'
+            '\n'
+            '\n'
+            'def server_session(root):\n'
+            '    """Log in to the instance\'s own Server and stage per-instance CLI credentials.\n'
+            '\n'
+            '    ``semantic install`` authenticates from ``$HOME/.semantic/credentials.json``,\n'
+            "    which a fresh install never creates. We log in with the instance's admin\n"
+            '    password and write a private HOME under the instance instead of overwriting\n'
+            "    the operator's own ``~/.semantic`` credentials; callers run the CLI with it.\n"
+            '\n'
+            '    Returns ``(home, server, token)``.\n'
+            '    """\n'
+            '    state = instance_state(root)\n'
+            '    server = f"http://127.0.0.1:{state[\'http_port\']}"\n'
+            '    try:\n'
+            "        reply = http_json(server + '/api/v1/auth/login',\n"
+            "                          data=json.dumps({'username': 'admin',\n"
+            "                                           'password': admin_password(root)}).encode())\n"
+            '    except (urllib.error.URLError, OSError) as error:\n'
+            "        raise ManifestError('Component installs need a running Server; start it with semanticctl start ({})'.format(error)) from None\n"
+            "    token = reply.get('token')\n"
+            '    if not token:\n'
+            "        raise ManifestError('Server login returned no token; check configs/secrets.json and the Server state')\n"
+            "    home = Path(root)/'cli-home'\n"
+            "    target = home/'.semantic'/'credentials.json'\n"
+            '    target.parent.mkdir(parents=True, exist_ok=True)\n'
+            "    target.write_text(json.dumps({'server': server, 'token': token,\n"
+            "                                  'expires_at': reply.get('expires_at')}))\n"
+            '    target.chmod(0o600)\n'
+            '    return home, server, token\n'
+            '\n'
+            '\n'
+            'def default_project(server, token):\n'
+            '    """The signed-in user\'s Default Project, resolved from the instance\'s Server."""\n'
+            "    projects = http_json(server + '/api/v1/projects', token).get('projects') or []\n"
+            '    for project in projects:\n'
+            "        if project.get('is_default'):\n"
+            "            return project['id']\n"
+            '    for project in projects:\n'
+            "        if (project.get('mode') or '') == 'development':\n"
+            "            return project['id']\n"
+            "    raise ManifestError('No usable Project on the Server; pass --project <project-id> explicitly')\n"
+            '\n'
+            '\n'
+            'def cli_environment(root, project, dry_run, report):\n'
+            '    """``(project, env)`` for the CLI commands: an authenticated per-instance HOME.\n'
+            '\n'
+            "    A missing ``--project`` falls back to the Server's Default Project. Dry runs\n"
+            '    neither log in nor touch the network, so an unset project stays a placeholder.\n'
+            '    """\n'
+            '    if dry_run:\n'
+            "        return (project or '<project-id>'), None\n"
+            '    home, server, token = server_session(root)\n'
+            '    if not project:\n'
+            '        project = default_project(server, token)\n'
+            "        report('note', 'Project', 'No --project given; using the Default Project {}'.format(project))\n"
+            '    return project, dict(os.environ, HOME=str(home))\n'
+            '\n'
+            '\n'
+            "PLACEHOLDER_SHA256 = '0' * 64\n"
+            '\n'
+            '\n'
+            'def placeholder_artifacts(manifest):\n'
+            '    """Artifacts still carrying the template\'s all-zero digest.\n'
+            '\n'
+            '    ``extensions/<id>/extension.json`` is a build template: the release tool\n'
+            '    backfills real digests (``artifacts/build_extension.py``) before anything is\n'
+            '    published. Installing the template itself would sail past the plan, then fail\n'
+            '    in digest verification artifact by artifact, so name the problem up front.\n'
+            '    """\n'
+            "    records = [manifest['runtime']['pack'], *manifest['components']]\n"
+            "    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]\n"
+            '\n'
+            '\n'
             'def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,\n'
             '            package_dir=None, workspace=None, replace=False, previews=True, scenes=None,\n'
             '            dry_run=False, report=print, runner=None):\n'
@@ -6470,13 +6804,20 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    Offline installs take artifacts from ``package_dir``; otherwise they are\n'
             '    expected in ``workspace`` (the caller downloads them there first).\n'
             '    """\n'
-            '    runner = runner or run_command\n'
+            '    placeholders = placeholder_artifacts(manifest)\n'
+            '    if placeholders:\n'
+            '        raise ManifestError(\n'
+            "            'manifest still carries placeholder sha256 (all zeros): ' + ', '.join(placeholders)\n"
+            "            + '; use the channel manifest, or backfill the digests with artifacts/build_extension.py before installing offline')\n"
             "    cli = str(Path(root)/'current/bin/semantic')\n"
             "    config = Path(root)/'configs/semantic-server.yaml'\n"
             '    paths = artifact_paths(manifest, package_dir, workspace)\n'
+            '    project, env = cli_environment(root, project, dry_run, report)\n'
+            '    # Validate the whole plan before downloading: a missing --asset-root or an\n'
+            '    # unbindable Skill must not cost the operator a multi-gigabyte download.\n'
+            '    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,\n'
+            '                         accept_license, replace, previews, scenes)\n'
             '    if dry_run:\n'
-            '        plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,\n'
-            '                             accept_license, replace, previews, scenes)\n'
             '        for name, command in plan:\n'
             "            report('dry-run', name, shell_line(command))\n"
             '        return plan\n'
@@ -6487,11 +6828,15 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '            path.parent.mkdir(parents=True, exist_ok=True)\n'
             "            _download(artifact['url'], path)\n"
             '        stage_artifact(artifact, path)\n'
-            '    plan = plan_commands(manifest, paths, cli, config, project, robot, asset_root,\n'
-            '                         accept_license, replace, previews, scenes)\n'
+            '    if runner is None:\n'
+            '        runner = lambda command: subprocess.run(command, check=True, env=env)\n'
             '    for name, command in plan:\n'
             "        report('run', name, shell_line(command))\n"
             '        runner(command)\n'
+            '    unbound = unbound_skills(manifest, robot)\n'
+            '    if unbound:\n'
+            "        report('note', 'Robot', 'No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: '\n"
+            "               + ', '.join(unbound))\n"
             "    for item in manifest.get('post_install') or []:\n"
             "        report('post', item['kind'], item['text'])\n"
             '    return plan\n'
@@ -6499,10 +6844,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             'def remove(manifest, root, project, dry_run=False, report=print, runner=None):\n'
             '    """Uninstall an extension: components first, then the Runtime installation."""\n'
-            '    runner = runner or run_command\n'
             "    cli = str(Path(root)/'current/bin/semantic')\n"
             "    config = Path(root)/'configs/semantic-server.yaml'\n"
+            '    project, env = cli_environment(root, project, dry_run, report)\n'
             '    plan = uninstall_plan(manifest, cli, config, project)\n'
+            '    if runner is None:\n'
+            '        runner = lambda command: subprocess.run(command, check=True, env=env)\n'
             '    for name, command in plan:\n'
             "        report('dry-run' if dry_run else 'run', name, shell_line(command))\n"
             '        if not dry_run:\n'
@@ -6520,6 +6867,26 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    return parse(Path(path).read_text(), source=source, base=base, repo=repo)\n'
             '\n'
             '\n'
+            'def list_catalog(base):\n'
+            '    """Known extensions: the channel ``index.json`` when published, else the built-in list."""\n'
+            '    try:\n'
+            "        index = http_json(channel_url(base, 'extensions', 'index.json'))\n"
+            '    except (urllib.error.URLError, OSError, ValueError):\n'
+            '        index = None\n'
+            '    rows = []\n'
+            '    if isinstance(index, dict) and index:\n'
+            '        for identifier, item in sorted(index.items()):\n'
+            '            item = item if isinstance(item, dict) else {}\n'
+            "            version = item.get('version')\n"
+            "            rows.append((identifier, item.get('title', ''), version if isinstance(version, str) else '?'))\n"
+            '        return rows\n'
+            '    for identifier in KNOWN_EXTENSIONS:\n'
+            '        version = stable_pointer(base, identifier)\n'
+            '        if version:\n'
+            "            rows.append((identifier, '', version))\n"
+            '    return rows\n'
+            '\n'
+            '\n'
             'def entry(args):\n'
             '    """``semanticctl extension`` dispatch."""\n'
             '    action = args.extension_action\n'
@@ -6528,18 +6895,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "    source = getattr(args, 'source', 'oss')\n"
             "    if action == 'list':\n"
             "        base = args.base_url.rstrip('/')\n"
-            '        try:\n'
-            "            with urllib.request.urlopen(urllib.request.Request(channel_url(base, 'extensions', 'index.json'),\n"
-            "                        headers={'Accept': 'application/json'}), timeout=30) as response:\n"
-            '                index = json.load(response)\n'
-            '        except (urllib.error.URLError, OSError, ValueError):\n'
-            '            index = None\n'
-            '        if not isinstance(index, dict) or not index:\n'
-            "            print(f'The channel {base} has no extension catalog (extensions/index.json)')\n"
+            '        rows = list_catalog(base)\n'
+            '        if not rows:\n'
+            "            print(f'The channel {base} has no available extensions')\n"
             '            return 1\n'
-            '        for identifier, item in sorted(index.items()):\n'
-            "            version = (item or {}).get('version') if isinstance(item, dict) else None\n"
-            '            print(f"{identifier}\\t{(item or {}).get(\'title\', \'\')}\\t{version if isinstance(version, str) else \'?\'}")\n'
+            '        for identifier, title, version in rows:\n'
+            '            print(f"{identifier}\\t{title}\\t{version}")\n'
             '        return 0\n'
             '    if not args.id:\n'
             "        raise SystemExit(f'extension {action} needs an extension id, for example isaac')\n"
@@ -6565,11 +6926,10 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    if not root:\n'
             "        raise SystemExit(f'extension {action} needs --root <install root>')\n"
             "    project = getattr(args, 'project', None)\n"
-            '    if not project:\n'
-            "        raise SystemExit(f'extension {action} needs --project <project id>')\n"
             "    dry_run = getattr(args, 'dry_run', False)\n"
             "    if action == 'install':\n"
-            '        for name, state, detail in probe_rows(manifest):\n'
+            "        asset_root = getattr(args, 'asset_root', None)\n"
+            "        for name, state, detail in probe_rows(manifest, values={'asset_root': asset_root}):\n"
             '            emit(state, name, detail)\n'
             '        for port, detail in port_warnings(manifest):\n'
             "            emit('warn', f'Port {port}', detail)\n"
@@ -6578,7 +6938,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '        if not package_dir and not dry_run:\n'
             '            workspace.mkdir(parents=True, exist_ok=True)\n'
             "        install(manifest, root, project=project, robot=getattr(args, 'robot', None),\n"
-            "                asset_root=getattr(args, 'asset_root', None),\n"
+            '                asset_root=asset_root,\n'
             "                accept_license=getattr(args, 'accept_license', None),\n"
             '                package_dir=package_dir, workspace=workspace,\n'
             "                replace=getattr(args, 'replace', False),\n"
@@ -6606,7 +6966,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "    commands.add_argument('--extension-package-dir', dest='extension_package_dir', type=Path,\n"
             "                          help='Offline artifact directory; all six artifacts make it fully offline')\n"
             "    commands.add_argument('--root', type=Path, help='Install root (required for install/remove)')\n"
-            "    commands.add_argument('--project', help='Target Project ID')\n"
+            "    commands.add_argument('--project', help='Target Project ID; defaults to the signed-in user Default Project')\n"
             "    commands.add_argument('--robot', help='Robot ID that robot_required components install onto')\n"
             "    commands.add_argument('--asset-root', dest='asset_root', help='Native asset root for the Runtime')\n"
             "    commands.add_argument('--accept-license', dest='accept_license', help='Accept the license declared by the Runtime pack')\n"

@@ -311,6 +311,9 @@
  "Runtime 内容": "Runtime content",
  "安装后": "Post-install",
  "清单未提供 check 命令": "The manifest declares no check command",
+ "未提供 {flags}，跳过该探测": "no {flags} given; probe skipped",
+ "清单里的 sha256 仍是占位值 (全 0): ": "manifest still carries placeholder sha256 (all zeros): ",
+ "；请改用发布通道的清单，或先用 artifacts/build_extension.py 回填后再离线安装": "; use the channel manifest, or backfill the digests with artifacts/build_extension.py before installing offline",
  "退出码 {code}": "exit code {code}",
  "缺少产物: {path}": "Missing artifact: {path}",
  " 大小不符: 期望 ": " size mismatch: expected ",
@@ -343,5 +346,12 @@
  "未知的产物通道: ": "Unknown artifact channel: ",
  "产物通道: oss 走 OSS, github 走 GitHub Releases (超限产物自动回退 OSS)": "Artifact channel: oss uses OSS, github uses GitHub Releases (oversized artifacts fall back to OSS)",
  "扩展产物通道: oss 走 OSS, github 走 GitHub Releases (超限产物自动回退 OSS)": "Extension artifact channel: oss uses OSS, github uses GitHub Releases (oversized artifacts fall back to OSS)",
- ") 通道 ": ") channel "
+ ") 通道 ": ") channel ",
+ "组件安装需要 Server 已启动；请先运行 semanticctl start ({})": "Component installs need a running Server; start it with semanticctl start ({})",
+ "Server 登录未返回 token；请检查 configs/secrets.json 与 Server 状态": "Server login returned no token; check configs/secrets.json and the Server state",
+ "无法在 Server 上找到可用 Project；请显式传 --project <项目ID>": "No usable Project on the Server; pass --project <project-id> explicitly",
+ "未指定 --project，使用默认项目 {}": "No --project given; using the Default Project {}",
+ "未随包绑定 Robot；到 Web 设备中心「添加 Pilot」后，在设备页安装这些 Skill: ": "No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: ",
+ " 没有可用的扩展": " has no available extensions",
+ "目标 Project ID；缺省用当前用户的默认项目": "Target Project ID; defaults to the signed-in user Default Project"
 }
