@@ -97,7 +97,7 @@ class ComponentConfigTests(unittest.TestCase):
         self.fixture()
         robot = self.root/'robots/r1/instance/robot-deployment.yaml'
         robot.parent.mkdir(parents=True)
-        robot.write_text('server: http://127.0.0.1:8034\nwebsocket: ws://127.0.0.1:8035/ws/pilot\nsdk: http://127.0.0.1:8036/robot\ntoken: keep-secret\n')
+        robot.write_text('server: http://127.0.0.1:8034\nwebsocket: ws://127.0.0.1:8035/ws/pilot\nsdk: http://127.0.0.1:8036/robot\ntoken: <test-secret>\n')
         with patch('uninstall.uninstall_managed', return_value={}), patch('uninstall.uninstall_processes', return_value=[]), \
              patch.object(installer, 'install_manager'), patch.object(installer, 'stop_owned'), patch.object(installer, 'check_port'), \
              patch.object(installer, 'desktop_shortcuts'), patch.object(installer, 'welcome'), patch('sys.stdout', new=io.StringIO()):
@@ -109,7 +109,7 @@ class ComponentConfigTests(unittest.TestCase):
         self.assertIn('server: http://127.0.0.1:28034', robot.read_text())
         self.assertIn('websocket: ws://127.0.0.1:28035/ws/pilot', robot.read_text())
         self.assertIn('sdk: http://127.0.0.1:28036/robot', robot.read_text())
-        self.assertIn('token: keep-secret', robot.read_text())
+        self.assertIn('token: <test-secret>', robot.read_text())
         self.assertEqual(support.read_component_config(self.root/'configs/components.yaml')['web_port'], 23000)
         self.assertEqual(len(list((self.root/'configs').glob('reconfigure-backup-*'))), 1)
 
