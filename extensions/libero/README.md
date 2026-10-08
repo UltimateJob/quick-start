@@ -68,7 +68,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 | Purpose | Default | Decided by |
 |---|---|---|
-| LIBERO runtime | `8092` | manifest `runtime.endpoint` (different from the base environment's native-mujoco `8090`, so both can coexist) |
+| LIBERO runtime | `8092` | manifest `runtime.endpoint` (different from the base environment's native-mujoco `8036`, so both can coexist) |
 | Ability range | `18100–18199` | `ability_port_first` / `ability_port_last` in `semantic-server.yaml` |
 | Server HTTP / WS | `8034` / `8035` | `semantic-server.yaml` |
 | Web front end | `3000` | `semantic-web` |

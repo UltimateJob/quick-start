@@ -1486,7 +1486,7 @@ def main():
     p.add_argument('--dry-run', action='store_true', help='uninstall: show the plan only')
     extension.register(commands)
     a = parser.parse_args()
-    handler = getattr(a, 'extension', None)
+    handler = getattr(a, 'extension_handler', None)
     if handler:
         sys.exit(handler(a))
     if a.command == 'control' and a.action not in ('uninstall', 'reconfigure') and (a.yes or a.purge or a.dry_run):
@@ -3038,7 +3038,7 @@ def register(parser):
     commands.add_argument('--dry-run', dest='dry_run', action='store_true', help='Print the commands without running them')
     commands.add_argument('--yes', action='store_true', help='remove: skip confirmation')
     commands.add_argument('--quiet', action='store_true')
-    commands.set_defaults(extension=entry)
+    commands.set_defaults(extension_handler=entry)
     return commands
 SEMANTIC_MANAGER_SOURCE
   cat > "$1/uninstall.py" <<'SEMANTIC_MANAGER_SOURCE'
@@ -5461,7 +5461,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "    p.add_argument('--dry-run', action='store_true', help='uninstall: show the plan only')\n"
             '    extension.register(commands)\n'
             '    a = parser.parse_args()\n'
-            "    handler = getattr(a, 'extension', None)\n"
+            "    handler = getattr(a, 'extension_handler', None)\n"
             '    if handler:\n'
             '        sys.exit(handler(a))\n'
             "    if a.command == 'control' and a.action not in ('uninstall', 'reconfigure') and (a.yes or a.purge or a.dry_run):\n"
@@ -7013,7 +7013,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "    commands.add_argument('--dry-run', dest='dry_run', action='store_true', help='Print the commands without running them')\n"
             "    commands.add_argument('--yes', action='store_true', help='remove: skip confirmation')\n"
             "    commands.add_argument('--quiet', action='store_true')\n"
-            '    commands.set_defaults(extension=entry)\n'
+            '    commands.set_defaults(extension_handler=entry)\n'
             '    return commands\n'
         ),
         'uninstall.py': (

@@ -62,7 +62,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 | 用途 | 默认 | 由谁决定 |
 |---|---|---|
-| LIBERO Runtime | `8092` | 清单 `runtime.endpoint`（与基础环境 native-mujoco 的 `8090` 不同，可并存） |
+| LIBERO Runtime | `8092` | 清单 `runtime.endpoint`（与基础环境 native-mujoco 的 `8036` 不同，可并存） |
 | Ability 段 | `18100–18199` | `semantic-server.yaml` 的 `ability_port_first` / `ability_port_last` |
 | Server HTTP / WS | `8034` / `8035` | `semantic-server.yaml` |
 | Web 前端 | `3000` | `semantic-web` |

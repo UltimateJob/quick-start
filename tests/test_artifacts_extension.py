@@ -827,6 +827,17 @@ class ChannelResolutionTests(unittest.TestCase):
         self.assertEqual(parsed.base_url, extension.DEFAULT_OSS_BASE)
         self.assertEqual(parsed.source, 'oss')
 
+    def test_handler_dest_does_not_collide_with_the_install_extension_flag(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        commands = parser.add_subparsers()
+        extension.register(commands)
+        parsed = parser.parse_args(['extension', 'show', 'libero'])
+        self.assertTrue(callable(parsed.extension_handler))
+        # installer.py's install parser stores the --extension id string under
+        # a.extension; the subcommand handler must live under a different dest.
+        self.assertIsNone(getattr(parsed, 'extension', None))
+
 
 class CheckedInManifestChannelTests(unittest.TestCase):
     """The committed templates must use relative URLs and mark the OSS-only tail."""

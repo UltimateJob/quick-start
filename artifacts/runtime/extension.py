@@ -951,5 +951,5 @@ def register(parser):
     commands.add_argument('--dry-run', dest='dry_run', action='store_true', help='只打印将执行的命令')
     commands.add_argument('--yes', action='store_true', help='remove: 跳过确认')
     commands.add_argument('--quiet', action='store_true')
-    commands.set_defaults(extension=entry)
+    commands.set_defaults(extension_handler=entry)
     return commands
