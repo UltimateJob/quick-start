@@ -90,11 +90,11 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 | `--extension-manifest <文件>` | 用本地清单覆盖来源 |
 | `--extension-dry-run` | 只打印命令计划，不改动现场 |
 
-装之前可以先看计划：
+装好基础环境后、正式安装前可以先看计划（dry-run 只打印命令、不改动现场）：
 
 ```bash
-curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
-  --extension libero --extension-dry-run
+semanticctl extension install libero --dry-run
+# 用离线目录时一并校验：semanticctl extension install libero --dry-run --extension-package-dir <目录>
 ```
 
 已经装好基础环境时，也可以直接用内置管理命令：

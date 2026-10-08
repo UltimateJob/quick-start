@@ -97,11 +97,12 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 | `--extension-manifest <file>` | override the manifest source with a local file |
 | `--extension-dry-run` | print the command plan without changing anything |
 
-Preview the plan first:
+Once the base environment is installed, preview the plan first (dry-run prints
+commands only and changes nothing):
 
 ```bash
-curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
-  --extension libero --extension-dry-run
+semanticctl extension install libero --dry-run
+# with an offline directory, validate it too: semanticctl extension install libero --dry-run --extension-package-dir <dir>
 ```
 
 With the base environment already installed, the bundled manager works too:
