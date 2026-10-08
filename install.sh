@@ -2895,7 +2895,7 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
         runner(command)
     unbound = unbound_skills(manifest, robot)
     if unbound:
-        report('note', 'Robot', '未随包绑定 Robot；到 Web 设备中心「添加 Pilot」后，在设备页安装这些 Skill: '
+        report('note', 'Robot', '未随包绑定 Robot；到 Web 设备中心的设备页安装这些 Skill（实体机器人主机需先「添加 Pilot」）: '
                + ', '.join(unbound))
     for item in manifest.get('post_install') or []:
         report('post', item['kind'], item['text'])

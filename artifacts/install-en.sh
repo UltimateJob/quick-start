@@ -2896,7 +2896,7 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
         runner(command)
     unbound = unbound_skills(manifest, robot)
     if unbound:
-        report('note', 'Robot', 'No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: '
+        report('note', 'Robot', 'No Robot is bundled; install these Skills from the device page in the web Device Centre (a physical robot host needs "Add Pilot" first): '
                + ', '.join(unbound))
     for item in manifest.get('post_install') or []:
         report('post', item['kind'], item['text'])
@@ -6871,7 +6871,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '        runner(command)\n'
             '    unbound = unbound_skills(manifest, robot)\n'
             '    if unbound:\n'
-            "        report('note', 'Robot', 'No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: '\n"
+            '        report(\'note\', \'Robot\', \'No Robot is bundled; install these Skills from the device page in the web Device Centre (a physical robot host needs "Add Pilot" first): \'\n'
             "               + ', '.join(unbound))\n"
             "    for item in manifest.get('post_install') or []:\n"
             "        report('post', item['kind'], item['text'])\n"

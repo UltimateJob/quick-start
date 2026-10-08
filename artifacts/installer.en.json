@@ -245,7 +245,7 @@
   "未知的 extension 动作: ": "Unknown extension action: ",
   "未知的 extension 动作: {action}": "Unknown extension action: {action}",
   "未知的产物通道: ": "Unknown artifact channel: ",
-  "未随包绑定 Robot；到 Web 设备中心「添加 Pilot」后，在设备页安装这些 Skill: ": "No Robot bound yet; after adding a Pilot in Device Center, install these Skills on the device page: ",
+  "未随包绑定 Robot；到 Web 设备中心的设备页安装这些 Skill（实体机器人主机需先「添加 Pilot」）: ": "No Robot is bundled; install these Skills from the device page in the web Device Centre (a physical robot host needs \"Add Pilot\" first): ",
   "本制品 Python/动态依赖需要 glibc >= ": "Python/dynamic dependencies in this artifact require glibc >= ",
   "本制品仅支持 Linux x86_64": "This artifact supports Linux x86_64 only",
   "本机": "Local",
