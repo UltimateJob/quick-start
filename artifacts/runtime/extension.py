@@ -781,6 +781,10 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
         artifact = manifest['runtime']['pack'] if key == 'runtime' else next(
             item for item in manifest['components'] if (item['role'], item['id']) == key)
         if package_dir is None and not path.is_file():
+            if artifact.get('user_provided'):
+                raise ManifestError(
+                    f"组件 {artifact.get('id', key)} 为用户自备、不随通道分发；"
+                    f"请按上游许可获取后放到 {path}，或用 --extension-package-dir 提供")
             path.parent.mkdir(parents=True, exist_ok=True)
             _download(artifact['url'], path)
         stage_artifact(artifact, path)

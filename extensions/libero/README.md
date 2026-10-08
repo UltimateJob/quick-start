@@ -10,9 +10,9 @@ one path:
 ① Environment preparation → ② Install into the framework → ③ Reproduce in the web Studio
 ```
 
-> Once the base environment is installed, the LIBERO artifacts are **self-contained**: no engine
-> image and no separately obtained dataset. The only external dependency is the model weights
-> (through a HuggingFace mirror).
+> Once the base environment is installed, the LIBERO code artifacts are **self-contained**: no
+> engine image required. The **scene dataset is not distributed with this channel** — you obtain
+> `libero-scenes.zip` yourself under the upstream license (see [1.2](#12-scene-dataset-and-model-weights)).
 
 ---
 
@@ -42,10 +42,22 @@ work. The manifest enforces this order and `install.sh` / `semanticctl` follow i
 | GPU | optional; a discrete GPU is faster | **Integrated graphics works**: CPU inference has automatic thread tuning (`OMP_NUM_THREADS`, etc.) |
 | Network | access to OSS (default channel) | on the GitHub channel the three largest artifacts still fall back to OSS, so use `--extension-package-dir` for a fully offline install |
 
-### 1.2 Model weights (the only external dependency)
+### 1.2 Scene dataset and model weights
 
-SmolVLA weights come from HuggingFace. **huggingface.co is unreachable from mainland China**; use a
-mirror (a proxy or the mirror, either one):
+**Scene dataset (you provide it).** The LIBERO scene dataset (`libero-scenes.zip`) is an upstream
+third-party asset and is **not distributed with this channel** (neither OSS nor GitHub Releases).
+Obtain it yourself under the upstream license (the upstream benchmark
+`github.com/Lifelong-Robot-Learning/LIBERO` or its official mirror), then point the installer at it:
+
+```bash
+# put libero-scenes.zip into a local directory and install fully offline from it
+install.sh --extension libero --extension-package-dir <dir>
+# the installer verifies it byte-for-byte against the manifest (sha256/size) — do not use repackaged copies
+```
+
+**Model weights (the only other external dependency).** SmolVLA weights come from HuggingFace.
+**huggingface.co is unreachable from mainland China**; use a mirror (a proxy or the mirror, either
+one):
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
@@ -262,7 +274,7 @@ semanticctl extension remove libero
 | Role | Artifact | Size | Channel |
 |---|---|---|---|
 | `runtime` | `semantic-libero-robosuite-1.4-0.4.0-dev.0.runtime.tar.zst` | about 2.2 GB | OSS + GitHub |
-| `scene_catalog` | `libero-scenes.zip` | about 239 MB | OSS + GitHub |
+| `scene_catalog` | `libero-scenes.zip` | about 239 MB | **not distributed — you provide it** (see [1.2](#12-scene-dataset-and-model-weights)) |
 | `robot_base` | `franka-libero-robot.zip` | about 2.9 GB | OSS only (>2 GiB) |
 | `robot_ability` | `franka-ability.zip` | about 2.9 GB | OSS only (>2 GiB) |
 | `model` | `franka-smolvla-model.zip` | about 3.3 GB | OSS only (>2 GiB) |
@@ -272,10 +284,12 @@ The runtime `installation_id` is `local-libero-robosuite-1.4` and its endpoint i
 
 ### License
 
-LIBERO is an upstream third-party benchmark (`github.com/Lifelong-Robot-Learning/LIBERO`); its assets
-are redistributed through this channel under authorization. For an extension whose manifest declares
-`license`, the installer adds `--accept-license LIBERO` automatically (you may also pass it
-explicitly). "Downloadable" does not mean freely redistributable.
+LIBERO is an upstream third-party benchmark (`github.com/Lifelong-Robot-Learning/LIBERO`). Its scene
+dataset is **not redistributed through this channel** — you obtain it separately under the upstream
+license, the same principle as the BEHAVIOR dataset. The `license` field on the code artifacts makes
+the installer add `--accept-license LIBERO` automatically (you may also pass it explicitly).
+"Downloadable" does not mean freely redistributable; do not upload the scene dataset to OSS or a
+GitHub Release either.
 
 ### Design
 

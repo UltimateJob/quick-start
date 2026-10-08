@@ -9,8 +9,8 @@ LIBERO 场景装进 Semantic，并在 Web Studio 里把机器人跑起来。按�
 ① 环境准备 → ② 安装到框架 → ③ 在 Web 上复刻
 ```
 
-> 只要基础环境装好，LIBERO 的产物是**自足**的：不需要引擎镜像、不需要单独取得数据集。
-> 唯一的外部依赖是模型权重（走 HuggingFace 镜像）。
+> 只要基础环境装好，LIBERO 的**代码类**产物是**自足**的：不需要引擎镜像。
+> **场景数据集不随本通道分发**，需你按上游许可自行获取 `libero-scenes.zip`（见 [1.2](#12-场景数据集与模型权重)）。
 
 ---
 
@@ -39,9 +39,20 @@ LIBERO 场景装进 Semantic，并在 Web Studio 里把机器人跑起来。按�
 | GPU | 可选；有独显更快 | **核显可跑**：CPU 推理有自动线程调优（`OMP_NUM_THREADS` 等） |
 | 网络 | 能访问 OSS（默认通道） | 走 GitHub 通道时三个大产物仍会回退 OSS，所以**离线请用 `--extension-package-dir`** |
 
-### 1.2 模型权重（唯一的外部依赖）
+### 1.2 场景数据集与模型权重
 
-SmolVLA 权重从 HuggingFace 取得。**国内直连 huggingface.co 不可达**，用镜像（代理与镜像二选一）：
+**场景数据集（用户自备）。** LIBERO 场景数据集（`libero-scenes.zip`）是上游第三方资产，
+**不随本通道分发**（不发 OSS、也不发 GitHub Release）。请按上游许可自行获取（上游 benchmark
+`github.com/Lifelong-Robot-Learning/LIBERO` 或其正式镜像），然后指给安装器：
+
+```bash
+# 把 libero-scenes.zip 放进本地目录，完全离线安装
+install.sh --extension libero --extension-package-dir <目录>
+# 安装器按清单里的 sha256/size 逐字节校验，不要用改打包的副本
+```
+
+**模型权重（另一项外部依赖）。** SmolVLA 权重从 HuggingFace 取得。**国内直连 huggingface.co
+不可达**，用镜像（代理与镜像二选一）：
 
 ```bash
 export HF_ENDPOINT=https://hf-mirror.com
@@ -243,7 +254,7 @@ semanticctl extension remove libero
 | 角色 | 产物 | 体积 | 通道 |
 |---|---|---|---|
 | `runtime` | `semantic-libero-robosuite-1.4-0.4.0-dev.0.runtime.tar.zst` | 约 2.2 GB | OSS + GitHub |
-| `scene_catalog` | `libero-scenes.zip` | 约 239 MB | OSS + GitHub |
+| `scene_catalog` | `libero-scenes.zip` | 约 239 MB | **不分发，用户自备**（见 [1.2](#12-场景数据集与模型权重)） |
 | `robot_base` | `franka-libero-robot.zip` | 约 2.9 GB | 仅 OSS（>2 GiB） |
 | `robot_ability` | `franka-ability.zip` | 约 2.9 GB | 仅 OSS（>2 GiB） |
 | `model` | `franka-smolvla-model.zip` | 约 3.3 GB | 仅 OSS（>2 GiB） |
@@ -253,9 +264,10 @@ Runtime 的 `installation_id` 是 `local-libero-robosuite-1.4`，endpoint 固定
 
 ### 许可
 
-LIBERO 是上游第三方 benchmark（`github.com/Lifelong-Robot-Learning/LIBERO`），资产已获授权在本
-通道内再分发。装带 `license` 字段的扩展时安装器会自动补 `--accept-license LIBERO`（也可显式传）。
-不要因为「能下载」就默认可再分发。
+LIBERO 是上游第三方 benchmark（`github.com/Lifelong-Robot-Learning/LIBERO`）。**场景数据集不随
+本通道分发**，需你按上游许可单独获取，与 BEHAVIOR 数据集同一原则。代码类产物带 `license`
+字段，安装器据此自动补 `--accept-license LIBERO`（也可显式传）。不要因为「能下载」就默认可
+再分发，也不要把场景数据集上传到 OSS 或 GitHub Release。
 
 ### 设计依据
 
