@@ -34,6 +34,13 @@ UNINSTALL_DIRS = ('releases', 'python', 'runtime-envs', 'runtime-packs', 'bin')
 
 
 def uninstall_root(value):
+    """Resolve and validate a managed instance root for uninstall.
+
+    Returns ``(root, state)`` parsed from ``install.json``. Rejects symlinks,
+    non-absolute or forbidden paths (home, cwd ancestry, system directories),
+    directories not owned by the current user, mount points inside the
+    instance, and tampered or missing management files.
+    """
     raw = Path(value).expanduser()
     root = raw.resolve()
     forbidden = {Path('/'), Path.home().resolve(), *Path.cwd().resolve().parents, Path.cwd().resolve()}
@@ -75,6 +82,7 @@ def uninstall_root(value):
 
 
 def uninstall_identity(pid):
+    """Start-time identity of a process, used to detect PID reuse; ``None`` for zombies and exited processes."""
     if platform.system() == 'Darwin':
         return mac_process(pid)[0]
     try:
@@ -85,6 +93,13 @@ def uninstall_identity(pid):
 
 
 def uninstall_managed(root):
+    """Live PIDs of the server/web services an instance manages, keyed as ``{pid: start_ticks}``.
+
+    Each recorded PID is matched against its stored start-time identity and
+    the expected executable under the instance's ``releases/`` tree before it
+    is returned; stale records are ignored. Raises on unknown service names or
+    mismatched executables rather than risking signalling the wrong process.
+    """
     path = root/'run/services.json'
     records = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(records, dict):
@@ -107,6 +122,12 @@ def uninstall_managed(root):
 
 
 def uninstall_processes(root, allowed=()):
+    """Processes still referencing the instance (argv, cwd or executable under the root).
+
+    Returns ``[{pid, command, reasons}]`` sorted by PID. The uninstaller's own
+    process ancestry and PIDs in ``allowed`` are excluded; a deleted working
+    directory no longer on the live tree does not count as a reference.
+    """
     if platform.system() == 'Darwin':
         return mac_processes(root, allowed)
     # Ignore this CLI and its invoking shell/terminal, not arbitrary processes.
@@ -231,6 +252,13 @@ def uninstall_shortcuts(root, state, note, dry_run=False):
 
 
 def uninstall_entry(argv):
+    """CLI entry point of the offline uninstaller.
+
+    Stops the verified managed services, removes program files (or the whole
+    instance with ``--purge``), and preserves configuration, data and logs by
+    default. ``--dry-run`` prints the plan without stopping or deleting
+    anything; unrelated processes are never killed.
+    """
     parser = argparse.ArgumentParser(description='Semantic 离线安全卸载；不下载制品，不卸载系统共享依赖')
     parser.add_argument('--dir', default=str(Path.home()/'.local/share/semantic'))
     parser.add_argument('--purge', action='store_true', help='永久删除该实例全部配置、数据库、日志及其他文件')

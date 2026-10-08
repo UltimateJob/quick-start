@@ -63,6 +63,11 @@ def emit(*values):
 
 
 def root_error(error):
+    """Unwrap nested SDK exceptions down to the innermost cause.
+
+    The unwrapped error's attributes (status code, error code) are safe to
+    report; the outer exception strings may embed signed URLs or credentials.
+    """
     seen = set()
     while callable(getattr(error, 'unwrap', None)) and id(error) not in seen:
         seen.add(id(error))
@@ -74,6 +79,13 @@ def root_error(error):
 
 
 def read_config(path):
+    """Load and validate the OSS credentials file.
+
+    The file must live outside the repository, belong to the current user
+    with mode 600, and use plain ``KEY=value`` lines (never shell). All
+    ``OSS_*`` keys required for publishing are checked, endpoints must be
+    credential-free HTTPS URLs.
+    """
     path = Path(path).expanduser()
     resolved = path.resolve(strict=True)
     if path.is_symlink() or HERE.parent == resolved or HERE.parent in resolved.parents:
@@ -107,6 +119,7 @@ def read_config(path):
 
 
 def digest(path):
+    """SHA-256 hex digest of a file, read in 1 MiB blocks."""
     h = hashlib.sha256()
     with Path(path).open('rb') as f:
         while block := f.read(1024*1024):
@@ -136,6 +149,13 @@ def release_files(version):
 
 
 class Store:
+    """OSS bucket client built from a validated config.
+
+    Uploads carry SHA-256 metadata and are re-verified (size, digest, ACL)
+    after every put. Objects are immutable unless listed in ``MUTABLE_KEYS`` /
+    ``MUTABLE_PATTERNS``; overwriting a mutable object first saves a verified
+    local backup of the old content.
+    """
     def __init__(self, config):
         import alibabacloud_oss_v2 as oss
         self.oss = oss
@@ -296,6 +316,13 @@ PY
 
 
 def main():
+    """CLI entry point: ``check`` the credentials, ``publish`` a release, or mint a signed download ``ticket``.
+
+    Publishing uploads the immutable release objects first and promotes the
+    channel pointer only after every upload verifies; for private buckets a
+    time-limited download ticket (plus a bootstrap launcher that references
+    it) is written outside the repository.
+    """
     global LOG_FILE
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', type=Path, default=DEFAULT_CONFIG)
