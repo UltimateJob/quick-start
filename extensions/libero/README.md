@@ -52,7 +52,8 @@ Obtain it yourself under the upstream license (the upstream benchmark
 ```bash
 # put libero-scenes.zip into a local directory and install fully offline from it
 install.sh --extension libero --extension-package-dir <dir>
-# the installer verifies it byte-for-byte against the manifest (sha256/size) — do not use repackaged copies
+# channel artifacts are verified byte-for-byte against the manifest (sha256/size);
+# your own scenes zip is not digest-pinned — the importing command validates its content
 ```
 
 **Model weights (the only other external dependency).** SmolVLA weights come from HuggingFace.

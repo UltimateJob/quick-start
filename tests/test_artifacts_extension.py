@@ -539,6 +539,75 @@ class PlaceholderDigestTests(unittest.TestCase):
                               dry_run=True, report=lambda *row: None)
 
 
+class UserProvidedArtifactTests(unittest.TestCase):
+    """User-provided artifacts are not digest-pinned by the channel."""
+
+    def parsed_with_user_provided_scenes(self):
+        value = json.loads(manifest())
+        scene = next(c for c in value['components'] if c['role'] == 'scene_catalog')
+        scene['user_provided'] = True
+        return extension.parse(json.dumps(value))
+
+    def scene_of(self, parsed):
+        return next(c for c in parsed['components'] if c['role'] == 'scene_catalog')
+
+    def test_stage_accepts_operator_supplied_bytes(self):
+        parsed = self.parsed_with_user_provided_scenes()
+        temp = __import__('tempfile').TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name)/'libero-scenes.zip'
+        path.write_bytes(b'operator-supplied-bytes')
+        self.assertEqual(extension.stage_artifact(self.scene_of(parsed), path), path)
+
+    def test_stage_still_requires_the_file(self):
+        parsed = self.parsed_with_user_provided_scenes()
+        with self.assertRaisesRegex(extension.ManifestError, '缺少产物'):
+            extension.stage_artifact(self.scene_of(parsed),
+                                     Path('/tmp/definitely-missing-libero-scenes.zip'))
+
+    def test_channel_artifact_digest_is_still_enforced(self):
+        parsed = self.parsed_with_user_provided_scenes()
+        temp = __import__('tempfile').TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        path = Path(temp.name)/'libero.runtime.tar.zst'
+        path.write_bytes(b'not-the-published-runtime')
+        with self.assertRaisesRegex(extension.ManifestError, '不符'):
+            extension.stage_artifact(parsed['runtime']['pack'], path)
+
+    def test_verify_skips_download_for_user_provided(self):
+        value = json.loads(manifest())
+        scene = next(c for c in value['components'] if c['role'] == 'scene_catalog')
+        scene['user_provided'] = True
+        for artifact in [value['runtime']['pack'], *value['components']]:
+            artifact['size'] = len(b'payload')
+            artifact['sha256'] = digest_of(b'payload')
+        parsed = extension.parse(json.dumps(value))
+
+        def forbidden_scenes(url, destination):
+            if 'libero-scenes' in str(url):
+                raise AssertionError('user-provided artifact must not be downloaded')
+            return write(b'payload')(url, destination)
+
+        with patch.object(extension, '_download', side_effect=forbidden_scenes), \
+             patch.object(extension, 'Progress'):
+            rows = extension.verify(parsed, quiet=True)
+        states = {name: state for name, state, _ in rows}
+        self.assertEqual(states['scene_catalog/libero-scenes'], 'user-provided')
+        others = [state for name, state in states.items() if name != 'scene_catalog/libero-scenes']
+        self.assertEqual(others, ['ok']*5)
+
+    def test_user_provided_placeholder_digest_is_exempt(self):
+        value = json.loads(manifest())
+        scene = next(c for c in value['components'] if c['role'] == 'scene_catalog')
+        scene['user_provided'] = True
+        scene['sha256'] = '0'*64
+        self.assertEqual(extension.placeholder_artifacts(extension.parse(json.dumps(value))), [])
+
+    def test_libero_checked_in_manifest_marks_scenes_user_provided(self):
+        parsed = extension.parse((ROOT/'extensions/libero/extension.json').read_text())
+        self.assertTrue(self.scene_of(parsed).get('user_provided'))
+
+
 class OfflineInstallTests(unittest.TestCase):
     """An offline directory must be verified by digest before anything runs."""
 
@@ -591,6 +660,18 @@ class OfflineInstallTests(unittest.TestCase):
         with self.assertRaisesRegex(extension.ManifestError, '缺少产物'):
             extension.install(self.parsed, self.pkg/'instance', project='proj-1',
                               package_dir=self.pkg, runner=lambda command: None)
+
+    def test_offline_install_accepts_operator_supplied_scenes(self):
+        value = json.loads(json.dumps(self.parsed))
+        scene = next(c for c in value['components'] if c['role'] == 'scene_catalog')
+        scene['user_provided'] = True
+        (self.pkg/'libero-scenes.zip').write_bytes(b'operator-supplied-scenes')
+        ran = []
+        plan = extension.install(value, self.pkg/'instance', project='proj-1',
+                                 package_dir=self.pkg, report=lambda *row: None,
+                                 runner=lambda command: ran.append(command))
+        self.assertEqual(len(plan), 6)
+        self.assertEqual(len(ran), 6)
 
 
 class CheckedInManifestTests(unittest.TestCase):

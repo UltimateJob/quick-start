@@ -48,7 +48,7 @@ LIBERO 场景装进 Semantic，并在 Web Studio 里把机器人跑起来。按�
 ```bash
 # 把 libero-scenes.zip 放进本地目录，完全离线安装
 install.sh --extension libero --extension-package-dir <目录>
-# 安装器按清单里的 sha256/size 逐字节校验，不要用改打包的副本
+# 通道产物按清单里的 sha256/size 逐字节校验；自备场景 zip 不锁定摘要，导入时校验内容
 ```
 
 **模型权重（另一项外部依赖）。** SmolVLA 权重从 HuggingFace 取得。**国内直连 huggingface.co

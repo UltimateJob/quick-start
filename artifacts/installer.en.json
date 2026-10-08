@@ -267,6 +267,7 @@
   "环境": "Environment",
   "用户取消": "Cancelled by user",
   "用户取消卸载": "Uninstall cancelled by user",
+  "用户自备、不随通道分发，无通道摘要可校验": "user-provided and not distributed with the channel; no channel digest to verify",
   "用途": "Purpose",
   "登录凭据 · 仅终端": "Credentials - terminal only",
   "目录": "Directory",

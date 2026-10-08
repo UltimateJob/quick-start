@@ -2284,7 +2284,8 @@ def parse(text, source=None, base=None, repo=None):
         component = dict(_artifact(record, field), role=role, id=identifier_text,
                          previews=_previews(record.get('previews'), f'{field}.previews'),
                          project_default=_flag(record.get('project_default'), f'{field}.project_default'),
-                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'))
+                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'),
+                         user_provided=_flag(record.get('user_provided'), f'{field}.user_provided'))
         key = (role, identifier_text)
         if key in seen:
             raise ManifestError(f'{field} is declared more than once: {role}/{identifier_text}')
@@ -2596,6 +2597,9 @@ def verify(manifest, quiet=False):
         for name, artifact in artifacts:
             if progress:
                 progress.next(name)
+            if artifact.get('user_provided'):
+                rows.append((name, 'user-provided', 'user-provided and not distributed with the channel; no channel digest to verify'))
+                continue
             state, detail = _verify_one(artifact)
             rows.append((name, state, detail))
             if state != 'ok':
@@ -2654,11 +2658,18 @@ def artifact_paths(manifest, package_dir=None, workspace=None):
 
 
 def stage_artifact(artifact, path):
-    """Verify a staged artifact before it is installed. Raises ``ManifestError``."""
+    """Verify a staged artifact before it is installed. Raises ``ManifestError``.
+
+    User-provided artifacts are not distributed by the channel, so the manifest
+    digest cannot describe them; presence is all that is checked here and the
+    importing command validates the payload itself.
+    """
     path = Path(path)
     name = path.name
     if not path.is_file():
         raise ManifestError(f'Missing artifact: {path}')
+    if artifact.get('user_provided'):
+        return path
     if path.stat().st_size != artifact['size']:
         raise ManifestError(f'{name} size mismatch: expected {artifact["size"]} but got {path.stat().st_size}')
     actual = digest(path)
@@ -2834,9 +2845,12 @@ def placeholder_artifacts(manifest):
     backfills real digests (``artifacts/build_extension.py``) before anything is
     published. Installing the template itself would sail past the plan, then fail
     in digest verification artifact by artifact, so name the problem up front.
+    User-provided artifacts are exempt: their bytes come from the operator, so
+    no channel digest exists to backfill.
     """
     records = [manifest['runtime']['pack'], *manifest['components']]
-    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256
+            and not record.get('user_provided')]
 
 
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
@@ -6245,7 +6259,8 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '        component = dict(_artifact(record, field), role=role, id=identifier_text,\n'
             "                         previews=_previews(record.get('previews'), f'{field}.previews'),\n"
             "                         project_default=_flag(record.get('project_default'), f'{field}.project_default'),\n"
-            "                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'))\n"
+            "                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'),\n"
+            "                         user_provided=_flag(record.get('user_provided'), f'{field}.user_provided'))\n"
             '        key = (role, identifier_text)\n'
             '        if key in seen:\n'
             "            raise ManifestError(f'{field} is declared more than once: {role}/{identifier_text}')\n"
@@ -6557,6 +6572,9 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '        for name, artifact in artifacts:\n'
             '            if progress:\n'
             '                progress.next(name)\n'
+            "            if artifact.get('user_provided'):\n"
+            "                rows.append((name, 'user-provided', 'user-provided and not distributed with the channel; no channel digest to verify'))\n"
+            '                continue\n'
             '            state, detail = _verify_one(artifact)\n'
             '            rows.append((name, state, detail))\n'
             "            if state != 'ok':\n"
@@ -6615,11 +6633,18 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def stage_artifact(artifact, path):\n'
-            '    """Verify a staged artifact before it is installed. Raises ``ManifestError``."""\n'
+            '    """Verify a staged artifact before it is installed. Raises ``ManifestError``.\n'
+            '\n'
+            '    User-provided artifacts are not distributed by the channel, so the manifest\n'
+            '    digest cannot describe them; presence is all that is checked here and the\n'
+            '    importing command validates the payload itself.\n'
+            '    """\n'
             '    path = Path(path)\n'
             '    name = path.name\n'
             '    if not path.is_file():\n'
             "        raise ManifestError(f'Missing artifact: {path}')\n"
+            "    if artifact.get('user_provided'):\n"
+            '        return path\n'
             "    if path.stat().st_size != artifact['size']:\n"
             '        raise ManifestError(f\'{name} size mismatch: expected {artifact["size"]} but got {path.stat().st_size}\')\n'
             '    actual = digest(path)\n'
@@ -6795,9 +6820,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '    backfills real digests (``artifacts/build_extension.py``) before anything is\n'
             '    published. Installing the template itself would sail past the plan, then fail\n'
             '    in digest verification artifact by artifact, so name the problem up front.\n'
+            '    User-provided artifacts are exempt: their bytes come from the operator, so\n'
+            '    no channel digest exists to backfill.\n'
             '    """\n'
             "    records = [manifest['runtime']['pack'], *manifest['components']]\n"
-            "    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]\n"
+            "    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256\n"
+            "            and not record.get('user_provided')]\n"
             '\n'
             '\n'
             'def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,\n'
