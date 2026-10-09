@@ -529,6 +529,13 @@ def load(path):
 
 
 def verify_payload(payload):
+    """Verify an extracted release payload against its checksum manifest.
+
+    Every file listed in ``payload/files.json`` must exist and match its
+    SHA-256; symlinks, absolute or parent-relative paths, and unlisted files
+    (except macOS ``.DS_Store`` metadata) are rejected. Returns the parsed
+    ``release.json`` manifest. Raises ``ValueError`` on any mismatch.
+    """
     records = load(payload/'files.json')
     if not isinstance(records, dict) or not records:
         raise ValueError('File checksum manifest is empty')
@@ -829,6 +836,14 @@ def publish(root, release, state, quiet=False):
 
 
 def start(root, quiet=False):
+    """Start the managed server and web services of an installed instance.
+
+    Prepares the musl runtime, runs the render probe, spawns
+    ``semantic-server`` and ``semantic-web-gateway`` with health checks, and
+    publishes the bundle's Robot Skills. Already-running services are kept;
+    anything started here is stopped again on failure. Raises if the
+    installation is not ``ready``.
+    """
     state = load(root/'install.json')
     if not state.get('ready'):
         raise RuntimeError('Installation is incomplete; run the installer again first')
@@ -1066,6 +1081,16 @@ def install_extension(root, a):
 
 
 def install(a):
+    """Install a verified payload at the managed root named by ``--dir``.
+
+    ``a`` is the parsed ``install`` CLI namespace. Verifies the payload,
+    enforces platform/port/directory constraints, deploys the release under
+    ``<dir>/releases/<version>``, builds the Robot Python environment,
+    initializes the server configuration on first install, and starts the
+    managed services unless ``--no-start``. An existing installation is
+    repaired in place only for the same version and ports; a different
+    version or implicit port change is refused.
+    """
     global INSTALL_LOG, PROGRESS
     payload = a.payload.resolve()
     manifest = verify_payload(payload)
@@ -1350,6 +1375,15 @@ def replace_config(path, data):
 
 
 def configure_existing(a):
+    """Reconfigure ports and web host of a completed installation in place.
+
+    Requires a finished install (``ready`` state) and no active instance
+    processes. Writes a timestamped backup under ``configs/``, applies the
+    component updates through atomic file replacement, and restarts the
+    managed services unless ``--no-start``. On failure every touched file is
+    restored and previously running services are started again. The Ability
+    port range cannot change once Robot configurations exist.
+    """
     global INSTALL_LOG
     from uninstall import uninstall_root, uninstall_managed, uninstall_processes
     root, state = uninstall_root(a.dir)
@@ -1430,6 +1464,7 @@ def configure_existing(a):
 
 
 def main():
+    """CLI entry point: define the install/configure/export-config/control/extension subcommands and dispatch to their handlers."""
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -1681,11 +1716,17 @@ class Console:
 
 
 def settings_form(title, rows, stream=None):
+    """Render a titled label/value form (rows of ``(label, value[, role])``) to a terminal stream."""
     console = Console(stream)
     console.write(console.form(title, rows))
 
 
 class Progress:
+    """Animated multi-stage progress checklist; falls back to plain lines on non-TTY streams.
+
+    Advance with ``next(task)`` and close with ``finish()``; on a terminal the
+    checklist redraws in place, otherwise one line per stage change is printed.
+    """
     def __init__(self, tasks, stream=None):
         self.tasks, self.stream = tasks, stream or sys.stderr
         self.done = 0
@@ -1785,6 +1826,7 @@ class Progress:
 
 
 def web_host(value):
+    """Validate a ``--web-host`` IPv4 listen address; rejects multicast and broadcast addresses."""
     try:
         address = ipaddress.IPv4Address(value)
     except ipaddress.AddressValueError:
@@ -1795,6 +1837,7 @@ def web_host(value):
 
 
 def web_probe(host):
+    """Address used to health-check the web listener: loopback for a wildcard host, else the host itself."""
     return '127.0.0.1' if host == '0.0.0.0' else host
 
 
@@ -1817,6 +1860,7 @@ def lan_addresses():
 
 
 def urls(state):
+    """Web URLs of an instance: one entry for a fixed host, loopback plus LAN addresses for a wildcard host."""
     host, port = state.get('web_host', '127.0.0.1'), state['web_port']
     if host != '0.0.0.0':
         return [f'http://{host}:{port}']
@@ -1900,6 +1944,15 @@ def macos_shortcuts(root, state):
 
 
 def desktop_shortcuts(root, state, mode='auto'):
+    """Create desktop/application entries for an instance; ``mode`` is auto, always or never.
+
+    macOS gets signed ``.app`` bundles under ``~/Applications``; Linux gets
+    ``.desktop`` files in the applications directory (and the Desktop when it
+    exists). Entries are never written through symlinks, outside the user's
+    home, or over modified files. Content fingerprints are recorded in
+    ``state`` so the uninstaller can remove exactly what was created. Returns
+    a human-readable summary message.
+    """
     if mode == 'never':
         return 'Desktop shortcuts skipped'
     if sys.platform == 'darwin':
@@ -1963,6 +2016,12 @@ def desktop_shortcuts(root, state, mode='auto'):
 
 
 def welcome(root, state, started, desktop_message='', stream=None, clear=True):
+    """Print the post-install welcome screen: banner, access URLs, admin account, and management commands.
+
+    The admin password is shown inline only on a real TTY; when output is
+    redirected it goes exclusively to the controlling terminal, never to the
+    redirected stream.
+    """
     import shlex
     console = Console(stream)
     stream = console.stream
@@ -2028,6 +2087,7 @@ COMPONENT_DEFAULTS = dict(http_port=8034, ws_port=8035, web_port=3000,
 
 
 def component_values(state=None):
+    """Effective component ports and web host: platform-aware defaults overlaid with persisted install state."""
     values = dict(COMPONENT_DEFAULTS)
     if sys.platform in ('darwin', 'win32'):
         values['web_host'] = '127.0.0.1'
@@ -2038,6 +2098,12 @@ def component_values(state=None):
 
 
 def read_component_config(path):
+    """Parse a component YAML file: flat scalar entries only, ``schema_version: 1`` required.
+
+    Unknown or duplicate keys and non-scalar syntax raise ``ValueError``; the
+    grammar is deliberately minimal so the macOS bootstrap can read the file
+    before Python exists.
+    """
     import re
     values = {}
     text = Path(path).read_text(encoding='utf-8')
@@ -2061,6 +2127,7 @@ def read_component_config(path):
 
 
 def validate_components(values):
+    """Validate component values: distinct ports in 1024-65535, a valid non-overlapping Ability port range, and a legal web host. Returns ``values``."""
     ports = [values[k] for k in ('http_port', 'ws_port', 'web_port', 'runtime_port')]
     if any(type(p) is not int or not 1024 <= p <= 65535 for p in ports) or len(set(ports)) != 4:
         raise ValueError('Component ports must be distinct integers between 1024 and 65535')
@@ -2074,6 +2141,7 @@ def validate_components(values):
 
 
 def component_yaml(values):
+    """Render the canonical ``components.yaml`` text for validated component values (no secrets)."""
     validate_components(values)
     return ('# Semantic component ports. CLI options override this file. No secrets.\n'
             '# Flat YAML scalars only; comments and quoted scalars are supported.\n'
@@ -2081,6 +2149,7 @@ def component_yaml(values):
 
 
 def export_components(path, values):
+    """Write the component YAML to ``path`` (``'-'`` means stdout); never overwrites an existing file."""
     text = component_yaml(values)
     if str(path) == '-':
         print(text, end='')
@@ -3020,6 +3089,7 @@ def entry(args):
 
 
 def register(parser):
+    """Add the ``extension`` subcommand to an argparse subparsers object and bind it to ``entry``."""
     commands = parser.add_parser('extension', help='Extension scenes: manifest view, artifact verify and install')
     commands.add_argument('extension_action', choices=['list', 'show', 'verify', 'install', 'remove'])
     commands.add_argument('id', nargs='?', help='Extension id, for example libero / isaac')
@@ -3084,6 +3154,13 @@ UNINSTALL_DIRS = ('releases', 'python', 'runtime-envs', 'runtime-packs', 'bin')
 
 
 def uninstall_root(value):
+    """Resolve and validate a managed instance root for uninstall.
+
+    Returns ``(root, state)`` parsed from ``install.json``. Rejects symlinks,
+    non-absolute or forbidden paths (home, cwd ancestry, system directories),
+    directories not owned by the current user, mount points inside the
+    instance, and tampered or missing management files.
+    """
     raw = Path(value).expanduser()
     root = raw.resolve()
     forbidden = {Path('/'), Path.home().resolve(), *Path.cwd().resolve().parents, Path.cwd().resolve()}
@@ -3125,6 +3202,7 @@ def uninstall_root(value):
 
 
 def uninstall_identity(pid):
+    """Start-time identity of a process, used to detect PID reuse; ``None`` for zombies and exited processes."""
     if platform.system() == 'Darwin':
         return mac_process(pid)[0]
     try:
@@ -3135,6 +3213,13 @@ def uninstall_identity(pid):
 
 
 def uninstall_managed(root):
+    """Live PIDs of the server/web services an instance manages, keyed as ``{pid: start_ticks}``.
+
+    Each recorded PID is matched against its stored start-time identity and
+    the expected executable under the instance's ``releases/`` tree before it
+    is returned; stale records are ignored. Raises on unknown service names or
+    mismatched executables rather than risking signalling the wrong process.
+    """
     path = root/'run/services.json'
     records = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(records, dict):
@@ -3157,6 +3242,12 @@ def uninstall_managed(root):
 
 
 def uninstall_processes(root, allowed=()):
+    """Processes still referencing the instance (argv, cwd or executable under the root).
+
+    Returns ``[{pid, command, reasons}]`` sorted by PID. The uninstaller's own
+    process ancestry and PIDs in ``allowed`` are excluded; a deleted working
+    directory no longer on the live tree does not count as a reference.
+    """
     if platform.system() == 'Darwin':
         return mac_processes(root, allowed)
     # Ignore this CLI and its invoking shell/terminal, not arbitrary processes.
@@ -3281,6 +3372,13 @@ def uninstall_shortcuts(root, state, note, dry_run=False):
 
 
 def uninstall_entry(argv):
+    """CLI entry point of the offline uninstaller.
+
+    Stops the verified managed services, removes program files (or the whole
+    instance with ``--purge``), and preserves configuration, data and logs by
+    default. ``--dry-run`` prints the plan without stopping or deleting
+    anything; unrelated processes are never killed.
+    """
     parser = argparse.ArgumentParser(description='Semantic safe offline uninstall; no artifact downloads or removal of shared system dependencies')
     parser.add_argument('--dir', default=str(Path.home()/'.local/share/semantic'))
     parser.add_argument('--purge', action='store_true', help='Permanently delete all configuration, databases, logs and other files in this instance')
@@ -3575,6 +3673,13 @@ UNINSTALL_DIRS = ('releases', 'python', 'runtime-envs', 'runtime-packs', 'bin')
 
 
 def uninstall_root(value):
+    """Resolve and validate a managed instance root for uninstall.
+
+    Returns ``(root, state)`` parsed from ``install.json``. Rejects symlinks,
+    non-absolute or forbidden paths (home, cwd ancestry, system directories),
+    directories not owned by the current user, mount points inside the
+    instance, and tampered or missing management files.
+    """
     raw = Path(value).expanduser()
     root = raw.resolve()
     forbidden = {Path('/'), Path.home().resolve(), *Path.cwd().resolve().parents, Path.cwd().resolve()}
@@ -3616,6 +3721,7 @@ def uninstall_root(value):
 
 
 def uninstall_identity(pid):
+    """Start-time identity of a process, used to detect PID reuse; ``None`` for zombies and exited processes."""
     if platform.system() == 'Darwin':
         return mac_process(pid)[0]
     try:
@@ -3626,6 +3732,13 @@ def uninstall_identity(pid):
 
 
 def uninstall_managed(root):
+    """Live PIDs of the server/web services an instance manages, keyed as ``{pid: start_ticks}``.
+
+    Each recorded PID is matched against its stored start-time identity and
+    the expected executable under the instance's ``releases/`` tree before it
+    is returned; stale records are ignored. Raises on unknown service names or
+    mismatched executables rather than risking signalling the wrong process.
+    """
     path = root/'run/services.json'
     records = json.loads(path.read_text()) if path.exists() else {}
     if not isinstance(records, dict):
@@ -3648,6 +3761,12 @@ def uninstall_managed(root):
 
 
 def uninstall_processes(root, allowed=()):
+    """Processes still referencing the instance (argv, cwd or executable under the root).
+
+    Returns ``[{pid, command, reasons}]`` sorted by PID. The uninstaller's own
+    process ancestry and PIDs in ``allowed`` are excluded; a deleted working
+    directory no longer on the live tree does not count as a reference.
+    """
     if platform.system() == 'Darwin':
         return mac_processes(root, allowed)
     # Ignore this CLI and its invoking shell/terminal, not arbitrary processes.
@@ -3772,6 +3891,13 @@ def uninstall_shortcuts(root, state, note, dry_run=False):
 
 
 def uninstall_entry(argv):
+    """CLI entry point of the offline uninstaller.
+
+    Stops the verified managed services, removes program files (or the whole
+    instance with ``--purge``), and preserves configuration, data and logs by
+    default. ``--dry-run`` prints the plan without stopping or deleting
+    anything; unrelated processes are never killed.
+    """
     parser = argparse.ArgumentParser(description='Semantic safe offline uninstall; no artifact downloads or removal of shared system dependencies')
     parser.add_argument('--dir', default=str(Path.home()/'.local/share/semantic'))
     parser.add_argument('--purge', action='store_true', help='Permanently delete all configuration, databases, logs and other files in this instance')
@@ -4504,6 +4630,13 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def verify_payload(payload):\n'
+            '    """Verify an extracted release payload against its checksum manifest.\n'
+            '\n'
+            '    Every file listed in ``payload/files.json`` must exist and match its\n'
+            '    SHA-256; symlinks, absolute or parent-relative paths, and unlisted files\n'
+            '    (except macOS ``.DS_Store`` metadata) are rejected. Returns the parsed\n'
+            '    ``release.json`` manifest. Raises ``ValueError`` on any mismatch.\n'
+            '    """\n'
             "    records = load(payload/'files.json')\n"
             '    if not isinstance(records, dict) or not records:\n'
             "        raise ValueError('File checksum manifest is empty')\n"
@@ -4804,6 +4937,14 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def start(root, quiet=False):\n'
+            '    """Start the managed server and web services of an installed instance.\n'
+            '\n'
+            '    Prepares the musl runtime, runs the render probe, spawns\n'
+            '    ``semantic-server`` and ``semantic-web-gateway`` with health checks, and\n'
+            "    publishes the bundle's Robot Skills. Already-running services are kept;\n"
+            '    anything started here is stopped again on failure. Raises if the\n'
+            '    installation is not ``ready``.\n'
+            '    """\n'
             "    state = load(root/'install.json')\n"
             "    if not state.get('ready'):\n"
             "        raise RuntimeError('Installation is incomplete; run the installer again first')\n"
@@ -5041,6 +5182,16 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def install(a):\n'
+            '    """Install a verified payload at the managed root named by ``--dir``.\n'
+            '\n'
+            '    ``a`` is the parsed ``install`` CLI namespace. Verifies the payload,\n'
+            '    enforces platform/port/directory constraints, deploys the release under\n'
+            '    ``<dir>/releases/<version>``, builds the Robot Python environment,\n'
+            '    initializes the server configuration on first install, and starts the\n'
+            '    managed services unless ``--no-start``. An existing installation is\n'
+            '    repaired in place only for the same version and ports; a different\n'
+            '    version or implicit port change is refused.\n'
+            '    """\n'
             '    global INSTALL_LOG, PROGRESS\n'
             '    payload = a.payload.resolve()\n'
             '    manifest = verify_payload(payload)\n'
@@ -5325,6 +5476,15 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def configure_existing(a):\n'
+            '    """Reconfigure ports and web host of a completed installation in place.\n'
+            '\n'
+            '    Requires a finished install (``ready`` state) and no active instance\n'
+            '    processes. Writes a timestamped backup under ``configs/``, applies the\n'
+            '    component updates through atomic file replacement, and restarts the\n'
+            '    managed services unless ``--no-start``. On failure every touched file is\n'
+            '    restored and previously running services are started again. The Ability\n'
+            '    port range cannot change once Robot configurations exist.\n'
+            '    """\n'
             '    global INSTALL_LOG\n'
             '    from uninstall import uninstall_root, uninstall_managed, uninstall_processes\n'
             '    root, state = uninstall_root(a.dir)\n'
@@ -5405,6 +5565,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def main():\n'
+            '    """CLI entry point: define the install/configure/export-config/control/extension subcommands and dispatch to their handlers."""\n'
             '    os.umask(0o077)\n'
             '    parser = argparse.ArgumentParser(description=__doc__)\n'
             "    commands = parser.add_subparsers(dest='command', required=True)\n"
@@ -5656,11 +5817,17 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def settings_form(title, rows, stream=None):\n'
+            '    """Render a titled label/value form (rows of ``(label, value[, role])``) to a terminal stream."""\n'
             '    console = Console(stream)\n'
             '    console.write(console.form(title, rows))\n'
             '\n'
             '\n'
             'class Progress:\n'
+            '    """Animated multi-stage progress checklist; falls back to plain lines on non-TTY streams.\n'
+            '\n'
+            '    Advance with ``next(task)`` and close with ``finish()``; on a terminal the\n'
+            '    checklist redraws in place, otherwise one line per stage change is printed.\n'
+            '    """\n'
             '    def __init__(self, tasks, stream=None):\n'
             '        self.tasks, self.stream = tasks, stream or sys.stderr\n'
             '        self.done = 0\n'
@@ -5760,6 +5927,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def web_host(value):\n'
+            '    """Validate a ``--web-host`` IPv4 listen address; rejects multicast and broadcast addresses."""\n'
             '    try:\n'
             '        address = ipaddress.IPv4Address(value)\n'
             '    except ipaddress.AddressValueError:\n'
@@ -5770,6 +5938,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def web_probe(host):\n'
+            '    """Address used to health-check the web listener: loopback for a wildcard host, else the host itself."""\n'
             "    return '127.0.0.1' if host == '0.0.0.0' else host\n"
             '\n'
             '\n'
@@ -5792,6 +5961,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def urls(state):\n'
+            '    """Web URLs of an instance: one entry for a fixed host, loopback plus LAN addresses for a wildcard host."""\n'
             "    host, port = state.get('web_host', '127.0.0.1'), state['web_port']\n"
             "    if host != '0.0.0.0':\n"
             "        return [f'http://{host}:{port}']\n"
@@ -5875,6 +6045,15 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             "def desktop_shortcuts(root, state, mode='auto'):\n"
+            '    """Create desktop/application entries for an instance; ``mode`` is auto, always or never.\n'
+            '\n'
+            '    macOS gets signed ``.app`` bundles under ``~/Applications``; Linux gets\n'
+            '    ``.desktop`` files in the applications directory (and the Desktop when it\n'
+            "    exists). Entries are never written through symlinks, outside the user's\n"
+            '    home, or over modified files. Content fingerprints are recorded in\n'
+            '    ``state`` so the uninstaller can remove exactly what was created. Returns\n'
+            '    a human-readable summary message.\n'
+            '    """\n'
             "    if mode == 'never':\n"
             "        return 'Desktop shortcuts skipped'\n"
             "    if sys.platform == 'darwin':\n"
@@ -5938,6 +6117,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             "def welcome(root, state, started, desktop_message='', stream=None, clear=True):\n"
+            '    """Print the post-install welcome screen: banner, access URLs, admin account, and management commands.\n'
+            '\n'
+            '    The admin password is shown inline only on a real TTY; when output is\n'
+            '    redirected it goes exclusively to the controlling terminal, never to the\n'
+            '    redirected stream.\n'
+            '    """\n'
             '    import shlex\n'
             '    console = Console(stream)\n'
             '    stream = console.stream\n'
@@ -6003,6 +6188,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def component_values(state=None):\n'
+            '    """Effective component ports and web host: platform-aware defaults overlaid with persisted install state."""\n'
             '    values = dict(COMPONENT_DEFAULTS)\n'
             "    if sys.platform in ('darwin', 'win32'):\n"
             "        values['web_host'] = '127.0.0.1'\n"
@@ -6013,6 +6199,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def read_component_config(path):\n'
+            '    """Parse a component YAML file: flat scalar entries only, ``schema_version: 1`` required.\n'
+            '\n'
+            '    Unknown or duplicate keys and non-scalar syntax raise ``ValueError``; the\n'
+            '    grammar is deliberately minimal so the macOS bootstrap can read the file\n'
+            '    before Python exists.\n'
+            '    """\n'
             '    import re\n'
             '    values = {}\n'
             "    text = Path(path).read_text(encoding='utf-8')\n"
@@ -6036,6 +6228,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def validate_components(values):\n'
+            '    """Validate component values: distinct ports in 1024-65535, a valid non-overlapping Ability port range, and a legal web host. Returns ``values``."""\n'
             "    ports = [values[k] for k in ('http_port', 'ws_port', 'web_port', 'runtime_port')]\n"
             '    if any(type(p) is not int or not 1024 <= p <= 65535 for p in ports) or len(set(ports)) != 4:\n'
             "        raise ValueError('Component ports must be distinct integers between 1024 and 65535')\n"
@@ -6049,6 +6242,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def component_yaml(values):\n'
+            '    """Render the canonical ``components.yaml`` text for validated component values (no secrets)."""\n'
             '    validate_components(values)\n'
             "    return ('# Semantic component ports. CLI options override this file. No secrets.\\n'\n"
             "            '# Flat YAML scalars only; comments and quoted scalars are supported.\\n'\n"
@@ -6056,6 +6250,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def export_components(path, values):\n'
+            '    """Write the component YAML to ``path`` (``\'-\'`` means stdout); never overwrites an existing file."""\n'
             '    text = component_yaml(values)\n'
             "    if str(path) == '-':\n"
             "        print(text, end='')\n"
@@ -6995,6 +7190,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def register(parser):\n'
+            '    """Add the ``extension`` subcommand to an argparse subparsers object and bind it to ``entry``."""\n'
             "    commands = parser.add_parser('extension', help='Extension scenes: manifest view, artifact verify and install')\n"
             "    commands.add_argument('extension_action', choices=['list', 'show', 'verify', 'install', 'remove'])\n"
             "    commands.add_argument('id', nargs='?', help='Extension id, for example libero / isaac')\n"
@@ -7059,6 +7255,13 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def uninstall_root(value):\n'
+            '    """Resolve and validate a managed instance root for uninstall.\n'
+            '\n'
+            '    Returns ``(root, state)`` parsed from ``install.json``. Rejects symlinks,\n'
+            '    non-absolute or forbidden paths (home, cwd ancestry, system directories),\n'
+            '    directories not owned by the current user, mount points inside the\n'
+            '    instance, and tampered or missing management files.\n'
+            '    """\n'
             '    raw = Path(value).expanduser()\n'
             '    root = raw.resolve()\n'
             "    forbidden = {Path('/'), Path.home().resolve(), *Path.cwd().resolve().parents, Path.cwd().resolve()}\n"
@@ -7100,6 +7303,7 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def uninstall_identity(pid):\n'
+            '    """Start-time identity of a process, used to detect PID reuse; ``None`` for zombies and exited processes."""\n'
             "    if platform.system() == 'Darwin':\n"
             '        return mac_process(pid)[0]\n'
             '    try:\n'
@@ -7110,6 +7314,13 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def uninstall_managed(root):\n'
+            '    """Live PIDs of the server/web services an instance manages, keyed as ``{pid: start_ticks}``.\n'
+            '\n'
+            '    Each recorded PID is matched against its stored start-time identity and\n'
+            "    the expected executable under the instance's ``releases/`` tree before it\n"
+            '    is returned; stale records are ignored. Raises on unknown service names or\n'
+            '    mismatched executables rather than risking signalling the wrong process.\n'
+            '    """\n'
             "    path = root/'run/services.json'\n"
             '    records = json.loads(path.read_text()) if path.exists() else {}\n'
             '    if not isinstance(records, dict):\n'
@@ -7132,6 +7343,12 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def uninstall_processes(root, allowed=()):\n'
+            '    """Processes still referencing the instance (argv, cwd or executable under the root).\n'
+            '\n'
+            "    Returns ``[{pid, command, reasons}]`` sorted by PID. The uninstaller's own\n"
+            '    process ancestry and PIDs in ``allowed`` are excluded; a deleted working\n'
+            '    directory no longer on the live tree does not count as a reference.\n'
+            '    """\n'
             "    if platform.system() == 'Darwin':\n"
             '        return mac_processes(root, allowed)\n'
             '    # Ignore this CLI and its invoking shell/terminal, not arbitrary processes.\n'
@@ -7256,6 +7473,13 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             '\n'
             '\n'
             'def uninstall_entry(argv):\n'
+            '    """CLI entry point of the offline uninstaller.\n'
+            '\n'
+            '    Stops the verified managed services, removes program files (or the whole\n'
+            '    instance with ``--purge``), and preserves configuration, data and logs by\n'
+            '    default. ``--dry-run`` prints the plan without stopping or deleting\n'
+            '    anything; unrelated processes are never killed.\n'
+            '    """\n'
             "    parser = argparse.ArgumentParser(description='Semantic safe offline uninstall; no artifact downloads or removal of shared system dependencies')\n"
             "    parser.add_argument('--dir', default=str(Path.home()/'.local/share/semantic'))\n"
             "    parser.add_argument('--purge', action='store_true', help='Permanently delete all configuration, databases, logs and other files in this instance')\n"

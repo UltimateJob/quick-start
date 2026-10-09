@@ -4135,6 +4135,7 @@ def _step_publish_skills(app):
 # --------------------------------------------------------------------------
 
 class Service:
+    """Bookkeeping for one long-running service process started by an install step."""
     def __init__(self, name, proc, logpath, host, port, sid):
         self.name, self.proc, self.logpath = name, proc, logpath
         self.host, self.port, self.sid = host, port, sid
@@ -4146,6 +4147,13 @@ class Service:
 
 
 class App:
+    """Installer state and execution engine, shared by the TUI and headless modes.
+
+    Owns the step queue, running processes, managed services, log buffer and
+    persisted step statuses; a UI (or the headless runner) drives it through
+    the queued steps. The child-process environment is rebuilt from the
+    current settings so stale exports from a previous install cannot leak in.
+    """
     def __init__(self, settings, headless=False):
         self.settings = settings
         self.headless = headless
@@ -5047,6 +5055,7 @@ HELP_TEXT = """Semantic 安装器: 按键与要点
 
 
 class UI:
+    """Curses front end for an App: stage/step tree, live log pane, settings forms and password prompts."""
     def __init__(self, app):
         self.app = app
         self.focus = "tree"
@@ -5991,6 +6000,11 @@ def init_colors():
 
 
 def run_tui(app):
+    """Run the interactive curses UI for ``app``.
+
+    SIGTERM/SIGHUP are converted into SystemExit so the ``finally`` path
+    always restores the terminal (echo, cbreak, keypad) even on signals.
+    """
     locale.setlocale(locale.LC_ALL, "")
     ui = UI(app)
     app.log("info", f"设置文件: {SETTINGS_FILE} (e 键修改环境变量)")
@@ -6047,6 +6061,12 @@ def run_tui(app):
 
 
 def main(argv):
+    """CLI entry point.
+
+    ``--list`` prints the stage/step plan; ``--run-all``/``--stage`` run
+    headless; otherwise the interactive TUI is launched. Returns the process
+    exit code.
+    """
     ap = argparse.ArgumentParser(description="Semantic 安装器 TUI (《新版Semantic安装步骤》)")
     ap.add_argument("--list", action="store_true", help="列出全部阶段与步骤")
     ap.add_argument("--run-all", action="store_true", help="无头模式: 顺序执行全部")
