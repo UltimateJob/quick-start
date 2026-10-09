@@ -2868,6 +2868,10 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
         artifact = manifest['runtime']['pack'] if key == 'runtime' else next(
             item for item in manifest['components'] if (item['role'], item['id']) == key)
         if package_dir is None and not path.is_file():
+            if artifact.get('user_provided'):
+                raise ManifestError(
+                    f"Component {artifact.get('id', key)} is user-provided and is not distributed with the channel;"
+                    f"Obtain it under the upstream license and place it at {path}, or provide it with --extension-package-dir")
             path.parent.mkdir(parents=True, exist_ok=True)
             _download(artifact['url'], path)
         stage_artifact(artifact, path)
@@ -6825,6 +6829,10 @@ with tempfile.TemporaryDirectory(prefix='semantic-download-') as temporary:
             "        artifact = manifest['runtime']['pack'] if key == 'runtime' else next(\n"
             "            item for item in manifest['components'] if (item['role'], item['id']) == key)\n"
             '        if package_dir is None and not path.is_file():\n'
+            "            if artifact.get('user_provided'):\n"
+            '                raise ManifestError(\n'
+            '                    f"Component {artifact.get(\'id\', key)} is user-provided and is not distributed with the channel;"\n'
+            '                    f"Obtain it under the upstream license and place it at {path}, or provide it with --extension-package-dir")\n'
             '            path.parent.mkdir(parents=True, exist_ok=True)\n'
             "            _download(artifact['url'], path)\n"
             '        stage_artifact(artifact, path)\n'
