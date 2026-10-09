@@ -1,250 +1,252 @@
-# Windows 原生适配清单
+# Windows native porting checklist
 
-依赖审计日期：2026-09-13；实施进度更新：2026-09-14。审计基线为 `macos-v0.1.0-rc.3` 及其锁定的组件提交。
-下方依赖审计以该基线为准；实施进度单独记录。Windows x64 ZIP 已通过完整原生 CI，`windows-v*` 标签工作流会重新验证后发布预览包。
-Windows 11 实体桌面 GPU 仍待单独验收。
-编译诊断、源码版本及 PyPI 文件检查见 [审计记录](artifacts/windows/audit-2026-09-13.json)。
+[English](README.windows.md) | [简体中文](README.windows.zh-CN.md)
 
-首版建议目标：Windows 11 x64、普通用户安装、本机 Server/Web/Pilot/AbilityFramework/MuJoCo，
-沿用一套随包 CPython 3.13 和 NumPy 2.3.5。Robot、Simulation 和 Skill 可以保留隔离的 venv，
-但共享同一 Python 基础运行时。Windows ARM64、Windows Service、可选 LIBERO/Robosuite 和正式 MSI 可后续扩展。
-运行和安装不依赖 WSL、Docker、Git Bash、预装 Python 或编译器。
+Dependency audit date: 2026-09-13; implementation progress updated: 2026-09-14. The audit baseline is `macos-v0.1.0-rc.3` and its pinned component commits.
+The dependency audit below follows that baseline; implementation progress is recorded separately. The Windows x64 ZIP has passed full native CI, and the `windows-v*` tag workflow re-verifies it before publishing the preview package.
+A physical Windows 11 desktop GPU still awaits separate acceptance.
+For compiler diagnostics, source versions and PyPI file inspection see the [audit record](artifacts/windows/audit-2026-09-13.json).
 
-## 实施进度
+Suggested first-release target: Windows 11 x64, installation by a normal user, local Server/Web/Pilot/AbilityFramework/MuJoCo,
+sharing one bundled CPython 3.13 and NumPy 2.3.5. Robot, Simulation and Skill may keep isolated venvs,
+but share the same Python base runtime. Windows ARM64, Windows Service, the optional LIBERO/Robosuite and a formal MSI can be extended later.
+Running and installing must not depend on WSL, Docker, Git Bash, a pre-installed Python or a compiler.
 
-官网与安装脚本的优先改动已通过 [quick-start PR #17](https://github.com/insightos-community/quick-start/pull/17)
-合并并部署；macOS 安装包已发布为 `macos-v0.1.0-rc.4`。
+## Implementation progress
 
-| 组件 | 已完成的 Windows 工作 | 验证与待办 |
+The priority changes to the website and install scripts have been merged and deployed via
+[quick-start PR #17](https://github.com/insightos-community/quick-start/pull/17); the macOS package has been released as `macos-v0.1.0-rc.4`.
+
+| Component | Completed Windows work | Verification and to-do |
 | --- | --- | --- |
-| semantic-deployment | 实例锁、Job Object 进程树、带创建时间身份的正常停止 IPC、临时路径 | [PR #6](https://github.com/insightos-community/semantic-deployment/pull/6) 已合并；Windows/Linux/macOS 原生契约测试通过。真实项目启动与正常释放已通过；[停止修复 PR #7](https://github.com/insightos-community/semantic-deployment/pull/7) 已合并 |
-| ability-scaffold | 原生 `ability.exe`，直接调用包内 Python；Windows 打包入口 | [PR #4](https://github.com/insightos-community/ability-scaffold/pull/4) 与 [PR #5](https://github.com/insightos-community/ability-scaffold/pull/5) 已合并；原生入口及安装后 wheel 的打包/解包/执行、UTF-8 输出测试通过 |
-| mujoco-runtime | Pydantic 版本对齐、跨平台资产路径检查、Windows 正常退出事件、原生 CI | [PR #10](https://github.com/insightos-community/mujoco-runtime/pull/10) 已合并；Windows 72 项 API/生命周期测试、MuJoCo 3.4.0 物理步进及 wheel 构建通过，Linux/macOS 回归通过 |
-| Semantic-Framework | CLI/Server/Pilot 的进程、路径和 PowerShell ports；Windows `glfw` 默认后端 | [PR #7](https://github.com/insightos-community/Semantic-Framework/pull/7) 已合并；Windows 原生构建、真实 Server 初始化/重启/正常停止、PowerShell 和 PDF 错误恢复测试通过，Linux/macOS 回归通过 |
-| AbilityFramework | MSVC/xmake、Windows 网卡/MAC/HostInfo、`.exe` 入口和路径支持 | [PR #5](https://github.com/insightos-community/AbilityFramework/pull/5) 已合并；[PR #6](https://github.com/insightos-community/AbilityFramework/pull/6) 已合并并修复虚继承指针还原导致的首个 Task 崩溃；Windows 25 项测试、116 项断言、中文路径 HTTP/SQLite 重启和随包 CRT 验证通过；[Windows 组件预发布](https://github.com/insightos-community/AbilityFramework/releases/tag/windows-v2.4.1-preview.2) 已提供 |
-| r1pro-ability | 7 个原生 Windows Ability 包、入口与依赖版本记录 | [PR #4](https://github.com/insightos-community/r1pro-ability/pull/4) 已合并；78 项测试通过、1 项真实场景测试跳过；[组件预发布](https://github.com/insightos-community/r1pro-ability/releases/tag/windows-v0.4.0-preview.1) 已提供，真实场景启动与 7 个 Ability 正常停止已验证 |
-| Pinocchio 3.9.0 | Windows 构建锁、EigenPy/Coal/HPP-FCL 兼容依赖、wheel/DLL 打包和脱离 Conda 验证脚本 | [PR #2](https://github.com/insightos-community/pinocchio/pull/2) 已合并；原生编译及独立 CPython 的 FK/RNEA、URDF/网格/碰撞和 DLL 检查通过，[Windows 组件预发布](https://github.com/insightos-community/pinocchio/releases/tag/windows-v3.9.0-preview.1) 已提供 |
-| Ability-SDK-Python | 原生入口下的已安装 wheel、IPC 与生命周期心跳集成测试 | [PR #3](https://github.com/insightos-community/Ability-SDK-Python/pull/3) 已合并；Windows/Linux 安装后 wheel 的生命周期、IPC 与入口回收测试通过 |
-| quick-start | 原生管理器、端口配置/事务回滚、本地卸载、离线 ZIP 组装和完整场景验证流程 | [PR #23](https://github.com/insightos-community/quick-start/pull/23) 已合并；[PR #24](https://github.com/insightos-community/quick-start/pull/24) 集成中。7 项管理器契约及本地卸载通过；包内 Python/UTF-8 文件访问与卸载 junction 拒绝测试通过；[整包 CI](https://github.com/insightos-community/quick-start/actions/runs/34823853506) 已通过离线安装/重试、两次项目启动与正常释放、端口重新配置、本地重启和保留数据卸载 |
+| semantic-deployment | Instance lock, Job Object process tree, graceful-stop IPC with creation-time identity, temporary paths | [PR #6](https://github.com/insightos-community/semantic-deployment/pull/6) merged; Windows/Linux/macOS native contract tests pass. Real project startup and graceful release verified; [stop-fix PR #7](https://github.com/insightos-community/semantic-deployment/pull/7) merged |
+| ability-scaffold | Native `ability.exe`, directly invoking the bundled Python; Windows packaging entry point | [PR #4](https://github.com/insightos-community/ability-scaffold/pull/4) and [PR #5](https://github.com/insightos-community/ability-scaffold/pull/5) merged; pack/unpack/execute of the native entry point and post-install wheel, and UTF-8 output tests pass |
+| mujoco-runtime | Pydantic version alignment, cross-platform asset path checks, Windows graceful-quit event, native CI | [PR #10](https://github.com/insightos-community/mujoco-runtime/pull/10) merged; 72 Windows API/lifecycle tests, MuJoCo 3.4.0 physics stepping and wheel build pass; Linux/macOS regression passes |
+| Semantic-Framework | CLI/Server/Pilot process, path and PowerShell ports; Windows `glfw` default backend | [PR #7](https://github.com/insightos-community/Semantic-Framework/pull/7) merged; Windows native build, real Server init/restart/graceful stop, PowerShell and PDF error-recovery tests pass; Linux/macOS regression passes |
+| AbilityFramework | MSVC/xmake, Windows NIC/MAC/HostInfo, `.exe` entry point and path support | [PR #5](https://github.com/insightos-community/AbilityFramework/pull/5) merged; [PR #6](https://github.com/insightos-community/AbilityFramework/pull/6) merged and fixes the first-Task crash caused by virtual-inheritance pointer restoration; 25 Windows tests and 116 assertions pass, HTTP/SQLite restart with Chinese paths and bundled CRT verified; [Windows component pre-release](https://github.com/insightos-community/AbilityFramework/releases/tag/windows-v2.4.1-preview.2) available |
+| r1pro-ability | 7 native Windows Ability packages, entry points and dependency version records | [PR #4](https://github.com/insightos-community/r1pro-ability/pull/4) merged; 78 tests pass, 1 real-scene test skipped; [component pre-release](https://github.com/insightos-community/r1pro-ability/releases/tag/windows-v0.4.0-preview.1) available; real-scene startup and graceful stop of the 7 Abilities verified |
+| Pinocchio 3.9.0 | Windows build lock, EigenPy/Coal/HPP-FCL compatible dependencies, wheel/DLL packaging and Conda-free verification script | [PR #2](https://github.com/insightos-community/pinocchio/pull/2) merged; native compilation and FK/RNEA, URDF/mesh/collision and DLL checks on standalone CPython pass; [Windows component pre-release](https://github.com/insightos-community/pinocchio/releases/tag/windows-v3.9.0-preview.1) available |
+| Ability-SDK-Python | Post-install wheel under the native entry point, IPC and lifecycle heartbeat integration tests | [PR #3](https://github.com/insightos-community/Ability-SDK-Python/pull/3) merged; lifecycle, IPC and entry-point teardown tests of the post-install wheel pass on Windows/Linux |
+| quick-start | Native manager, port configuration/transaction rollback, local uninstall, offline ZIP assembly and full-scenario verification flow | [PR #23](https://github.com/insightos-community/quick-start/pull/23) merged; [PR #24](https://github.com/insightos-community/quick-start/pull/24) being integrated. 7 manager contracts and local uninstall pass; bundled-Python/UTF-8 file access and uninstall junction-rejection tests pass; [full-package CI](https://github.com/insightos-community/quick-start/actions/runs/34823853506) passed offline install/retry, two project startups with graceful release, port reconfiguration, local restart and data-preserving uninstall |
 
-机器可读的提交/CI 记录见 [实施记录](artifacts/windows/progress-2026-09-14.json)。
+Machine-readable commit/CI records are in the [implementation record](artifacts/windows/progress-2026-09-14.json).
 
-MuJoCo 的通过结果覆盖 API、物理步进和真实拆码垛项目启动。7 个 Ability、3 个 Skill 与 Pilot 已联合就绪并正常释放。Windows 桌面 GPU、连续 RGB/depth 渲染仍未完成实机验证。
-Windows venv 的 `python.exe` 可能是重定向入口，正常停止 IPC 必须定位实际解释器，
-不能将 `Popen.terminate()` 当成正常停止。
+The MuJoCo pass results cover the API, physics stepping and a real depalletizing project startup. 7 Abilities, 3 Skills and Pilot are jointly ready and released gracefully. Windows desktop GPU and continuous RGB/depth rendering have not yet completed physical-machine verification.
+A Windows venv's `python.exe` may be a redirector entry point; graceful-stop IPC must locate the actual interpreter —
+`Popen.terminate()` must not be treated as a graceful stop.
 
-在 semantic-deployment 中使用 Go 1.25.8 复现（Windows PowerShell 同样适用）：
+Reproduce in semantic-deployment with Go 1.25.8 (likewise in Windows PowerShell):
 
 ```text
 go test ./internal/ports/... -count=1 -timeout=2m
 ```
 
-Windows 安装管理接口与公共 wheel 的复现方式见 [开发说明](artifacts/windows/README.md)。
+For reproducing the Windows install-management interface and the public wheel see the [development notes](artifacts/windows/README.md).
 
-组件具体复现入口：
+Per-component reproduction entry points:
 
-- Framework：[Windows 构建与原生验证](https://github.com/insightos-community/Semantic-Framework/blob/feat/windows-process-ports/docs/platforms/windows.md)。
-- Ability 入口：[MSVC 构建说明](https://github.com/insightos-community/ability-scaffold/blob/main/README.build.md#windows-native-launcher)。
-- MuJoCo：[Windows 构建和物理验证](https://github.com/insightos-community/mujoco-runtime/blob/main/README.build.md#windows-x64-native-validation)。
-- Pinocchio：[`ci/windows/build.ps1`](https://github.com/insightos-community/pinocchio/blob/feat/windows-release/ci/windows/build.ps1)，已提供独立运行验证与组件预发布。
+- Framework: [Windows build and native validation](https://github.com/insightos-community/Semantic-Framework/blob/feat/windows-process-ports/docs/platforms/windows.md).
+- Ability entry point: [MSVC build notes](https://github.com/insightos-community/ability-scaffold/blob/main/README.build.md#windows-native-launcher).
+- MuJoCo: [Windows build and physics validation](https://github.com/insightos-community/mujoco-runtime/blob/main/README.build.md#windows-x64-native-validation).
+- Pinocchio: [`ci/windows/build.ps1`](https://github.com/insightos-community/pinocchio/blob/feat/windows-release/ci/windows/build.ps1), with standalone-run validation and a component pre-release already provided.
 
-## 实施路线与 ports 边界
+## Implementation route and ports boundary
 
-Pinocchio 属于“已有 Windows 支持，需要补齐本项目的构建与发布”，不需要从零移植算法。
-组织已有 [insightos-community/pinocchio](https://github.com/insightos-community/pinocchio)，直接扩展该 fork。
-检查到的 3.9.0 源码包含 Windows Release、clang-cl 和 Python standalone CI 路径，
-`pixi.toml` 声明 `win-64`、Windows Python 安装目录和碰撞依赖。
-参见 [现有 CI](https://github.com/insightos-community/pinocchio/blob/2e5854965571237a17934e1baca13d856d053b3c/.github/workflows/macos-linux-windows-pixi.yml)
-和 [构建环境](https://github.com/insightos-community/pinocchio/blob/2e5854965571237a17934e1baca13d856d053b3c/pixi.toml)。
+Pinocchio is a case of "Windows support already exists; what is needed is building and releasing for this project", not porting algorithms from scratch.
+The organization already has [insightos-community/pinocchio](https://github.com/insightos-community/pinocchio); extend that fork directly.
+The inspected 3.9.0 source already contains Windows Release, clang-cl and Python standalone CI paths,
+and `pixi.toml` declares `win-64`, the Windows Python install directory and collision dependencies.
+See the [existing CI](https://github.com/insightos-community/pinocchio/blob/2e5854965571237a17934e1baca13d856d053b3c/.github/workflows/macos-linux-windows-pixi.yml)
+and the [build environment](https://github.com/insightos-community/pinocchio/blob/2e5854965571237a17934e1baca13d856d053b3c/pixi.toml).
 
-自建分两步：先复现上游 Windows 编译/测试，固定 Python 3.13、NumPy 2.3.5 和完整 URDF/碰撞功能；
-再输出能在随包 Python 中离线安装的 wheel/DLL，并在未激活 Pixi/Conda 的干净环境测试。
-Pixi 可以作为构建工具，但不能因为它能运行测试，就认定离开其环境的 installer 也能运行。
-依赖先采用上游已支持的构建方案；只对确有补丁、版本或发布需求的库补独立构建，不预设全部重写。
+Self-building is a two-step process: first reproduce the upstream Windows compilation/tests, pinning Python 3.13, NumPy 2.3.5 and full URDF/collision functionality;
+then produce wheel/DLLs that install offline into the bundled Python, and test in a clean environment without Pixi/Conda activated.
+Pixi can serve as a build tool, but the fact that tests run under it does not prove the installer also runs outside its environment.
+For dependencies, first adopt build schemes the upstream already supports; only add standalone builds for libraries with a definite patch, version or release need — do not presume a full rewrite.
 
-Framework 与 supervisor 应建立 ports/平台适配层，集中处理操作系统差异。
-业务代码保留实例状态机、启动顺序、hold/stop 证据和错误处理。
+Framework and the supervisor should establish a ports/platform adaptation layer that centralizes operating-system differences.
+Business code keeps the instance state machine, startup order, hold/stop evidence and error handling.
 
-| ports 职责 | Unix adapter | Windows adapter | 共同契约 |
+| ports responsibility | Unix adapter | Windows adapter | Common contract |
 | --- | --- | --- | --- |
-| 进程树启动和回收 | POSIX 进程组、wait、信号 | 进程句柄、Job Objects、等待/退出码 | 只控制自己创建或已验证归属的进程，保证子进程归属，回收后无残留 |
-| 请求正常停止 | 应用协议或约定信号 | 应用 IPC；控制台事件仅在适用时使用 | 请求停止、收到业务停止证据、强制回收必须是三个独立动作 |
-| 实例锁 | flock | LockFileEx 或命名 mutex | 互斥、非阻塞竞争、进程崩溃后可恢复 |
-| 进程身份 | PID、启动时间、可执行路径 | 句柄、创建时间、映像路径 | 避免 PID 复用后误认或误杀进程 |
-| host command | POSIX shell adapter | 明确选择的 PowerShell/cmd adapter | 参数与引号语义清楚、超时取消覆盖子进程 |
+| Process-tree startup and reaping | POSIX process groups, wait, signals | Process handles, Job Objects, wait/exit codes | Only control processes it created or whose ownership is verified; guarantee child-process ownership; no residue after reaping |
+| Request graceful stop | Application protocol or agreed signals | Application IPC; console events only where applicable | Requesting stop, receiving business stop evidence, and forced reaping must be three separate actions |
+| Instance lock | flock | LockFileEx or named mutex | Mutual exclusion, non-blocking contention, recoverable after process crash |
+| Process identity | PID, start time, executable path | Handle, creation time, image path | Avoid mistaking or killing a process after PID reuse |
+| host command | POSIX shell adapter | Explicitly chosen PowerShell/cmd adapter | Clear argument and quoting semantics; timeout cancellation covers child processes |
 
-可执行后缀、venv 布局、平台标识和默认渲染后端使用集中函数/配置，不必全部包装成接口。
-Go 代码按 `linux`、`darwin`、`windows` build tags 选择 adapter；不再用 `!darwin` 代表 Linux。
-各调用方的 ports 接口保持小而明确；可复用的底层 adapter 可放入独立版本化的公共 Go 包，
-不要让两个仓库互相导入对方的 `internal`，也不要让 Framework 依赖 supervisor 的业务状态机。
-AbilityFramework 的 C++ 适配单独实现，并遵守同一进程生命周期契约。
+Executable suffixes, venv layout, platform identifiers and the default render backend use centralized functions/configuration — they need not all be wrapped as interfaces.
+Go code selects adapters via `linux`, `darwin`, `windows` build tags; no longer use `!darwin` to mean Linux.
+Each caller's ports interface stays small and explicit; reusable low-level adapters may go into a separately versioned public Go package.
+Do not let two repositories import each other's `internal`, and do not let Framework depend on the supervisor's business state machine.
+AbilityFramework's C++ adaptation is implemented separately and follows the same process-lifecycle contract.
 
-先将当前 Linux/macOS 实现迁入 adapter 并通过原有回归，再增加 Windows adapter。
-契约测试必须包含停止未确认时保留 interrupted/对账能力；`Close` 不应暗含无条件强杀。
-Windows 下 Job 句柄的拥有者、生命周期、异常退出策略和进程加入时机需要明确设计。
+First migrate the current Linux/macOS implementation into adapters and pass the existing regression, then add the Windows adapter.
+Contract tests must include retaining the interrupted/reconciliation capability when a stop is unconfirmed; `Close` must not imply an unconditional kill.
+The owner, lifecycle, abnormal-exit policy and process-join timing of Job handles on Windows need explicit design.
 
-| 工作组 | 相对工作量判断 | 主要不确定性 |
+| Work group | Relative effort estimate | Main uncertainties |
 | --- | --- | --- |
-| Pinocchio 自建发布 | 中等，构建路线已有依据 | 精确版本组合、NumPy/Boost.Python ABI、DLL 闭包和脱离构建环境运行 |
-| Framework / supervisor ports | 核心工作 | 停止协议、状态机与 OS 进程树/锁语义衔接 |
-| AbilityFramework | 中等，不能只视为换编译器 | POSIX 权限/网络接口、MSVC 编译与子进程行为 |
-| Ability 入口、纯 Python SDK、Web、静态资源 | 通常较小 | 路径、参数、编码和平台元数据 |
-| Installer | 中等 | Windows 文件锁、版本切换、无管理员安装和完整卸载 |
-| MuJoCo/GLFW 集成 | 代码改动预计较小，验证需单列 | 实际图形会话、驱动、连续帧和上下文生命周期 |
+| Pinocchio self-build release | Medium; the build route has a basis | Exact version combination, NumPy/Boost.Python ABI, DLL closure and running outside the build environment |
+| Framework / supervisor ports | Core work | Stop protocol; how the state machine connects with OS process-tree/lock semantics |
+| AbilityFramework | Medium; cannot be treated as just a compiler switch | POSIX permissions/network interfaces, MSVC compilation and child-process behavior |
+| Ability entry points, pure-Python SDK, Web, static assets | Usually small | Paths, arguments, encoding and platform metadata |
+| Installer | Medium | Windows file locking, version switching, admin-free installation and complete uninstall |
+| MuJoCo/GLFW integration | Code changes expected small; validation needs its own line | Real graphics sessions, drivers, continuous frames and context lifecycle |
 
-这些是源码审计后的相对判断，不是已经完成的 Windows 构建结果或工期承诺。
+These are relative judgments made after a source audit — not already-achieved Windows build results or schedule commitments.
 
-## 初始基线审计（2026-09-13）
+## Initial baseline audit (2026-09-13)
 
-本节保留适配前的诊断，当前实现结果以上方实施进度为准。
+This section preserves the pre-porting diagnostics; for current implementation results see the implementation progress above.
 
-| 检查 | 结果 | 对适配的影响 |
+| Check | Result | Impact on the port |
 | --- | --- | --- |
-| Framework Windows 交叉编译 | 失败：`Setpgid`、`syscall.Kill` 不存在 | 需要拆分进程平台实现，不能只设置 `GOOS=windows` |
-| semantic-deployment Windows 交叉编译 | 失败：另有 `Flock`、`LOCK_EX` 等 | supervisor、实例锁和进程身份检查必须适配 |
-| 完整第三方依赖按 Windows/3.13 解析，仅允许 wheel | 失败：`pin==3.9.0` 无可用 wheel | Pinocchio 打包是首要依赖阻塞 |
-| 暂时移除 Pinocchio 及直接 cmeel 约束的解析探针 | 38 个包成功解析 | 只证明这部分依赖有候选解，不能据此删掉机器人依赖或宣布安装成功 |
-| Ability 启动入口 | 7 个包均使用 `#!/usr/bin/env bash` | 架构标签仍为 x86_64 也不能在 Windows 直接执行 |
-| Runtime 的后端默认值 | 已有 Windows → `glfw` | 上层 Framework 和 installer 仍可能覆盖成 `egl`，需要贯通修改 |
-| Pydantic 一致性 | 三个 Skill 锁定 2.13.4；Runtime 对 Windows 仍选择 2.11.5 | 需要 Windows 的一致约束，避免重现 macOS 离线安装故障 |
+| Framework Windows cross-compilation | Failed: `Setpgid`, `syscall.Kill` do not exist | Process platform implementations must be split; setting only `GOOS=windows` is not enough |
+| semantic-deployment Windows cross-compilation | Failed: additionally `Flock`, `LOCK_EX` etc. | The supervisor, instance lock and process-identity checks must be adapted |
+| Full third-party dependency resolution for Windows/3.13, wheels only | Failed: no usable wheel for `pin==3.9.0` | Pinocchio packaging is the primary dependency blocker |
+| Resolution probe with Pinocchio and direct cmeel constraints temporarily removed | 38 packages resolved successfully | Only proves this subset of dependencies has candidates; it does not justify deleting robot dependencies or declaring installation success |
+| Ability launch entry points | All 7 packages use `#!/usr/bin/env bash` | Even with the architecture tag still x86_64, they cannot execute directly on Windows |
+| Runtime backend default value | Already Windows → `glfw` | The upper Framework and installer may still override it to `egl`; an end-to-end change is needed |
+| Pydantic consistency | The three Skills pin 2.13.4; the Runtime still selects 2.11.5 on Windows | A consistent Windows constraint is needed to avoid repeating the macOS offline-installation failure |
 
-交叉编译在 Linux 主机执行，使用发布基线的实际源码：
+Cross-compilation runs on a Linux host, using the actual source of the release baseline:
 
 ```bash
-# 分别在 Semantic-Framework 和 semantic-deployment 仓库执行
+# Run in the Semantic-Framework and semantic-deployment repositories respectively
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build ./cmd/...
 
-# 在 quick-start 中执行：当前预期在 pin==3.9.0 处失败
+# Run in quick-start: currently expected to fail at pin==3.9.0
 uv pip compile artifacts/macos/installer-requirements.in \
   --python-version 3.13 --python-platform x86_64-pc-windows-msvc \
   --only-binary :all: --generate-hashes -o /tmp/windows-probe.lock
 ```
 
-上述 macOS requirements 仅用于检查现有版本组合；最终必须生成独立的 Windows 输入文件和锁文件。
+The macOS requirements above are only used to check the existing version combination; ultimately a standalone Windows input file and lock file must be produced.
 
-## 初始验收清单（实施状态以上方进度为准）
+## Initial acceptance checklist (see the progress above for implementation status)
 
-以下保留原始规划范围，未勾选项不等于当前全部尚未实施。各阶段实际通过的检查、尚未通过的整包检查和对应证据见上方实施记录。
+The original planning scope is preserved below; unchecked items do not mean everything is still unimplemented. For the checks actually passed per stage, the full-package checks not yet passed and the corresponding evidence, see the implementation record above.
 
-## P0：依赖和核心进程可运行
+## P0: dependencies and core processes runnable
 
-### Python 与数学依赖
+### Python and math dependencies
 
-以下结果来自指定版本的 PyPI 文件清单，按标准 CPython 3.13 / `win_amd64` 标签检查。
-“有 wheel”不等于已验证 DLL 加载或业务行为。
+The results below come from the PyPI file listings of the specified versions, checked against standard CPython 3.13 / `win_amd64` tags.
+"Has a wheel" does not equal verified DLL loading or business behavior.
 
-| 依赖 | 当前版本 | Windows x64 候选产物 | 待办 |
+| Dependency | Current version | Windows x64 candidate artifact | To-do |
 | --- | --- | --- | --- |
-| MuJoCo | 3.4.0 | 有 `cp313-cp313-win_amd64` wheel | 使用上游 wheel，测试物理步进和渲染 |
-| NumPy | 2.3.5 | 有 `cp313-cp313-win_amd64` wheel | 验证与自建 Pinocchio/EigenPy 的 NumPy ABI |
-| Ruckig | 0.19.4 | 有 `cp313-cp313-win_amd64` wheel | 优先复用，测试轨迹生成；自建作为复现选项 |
-| GLFW | 2.10.2 | 有 `py2.py3-none-win_amd64` wheel | 检查随包 DLL 与 OpenGL 上下文 |
-| Pydantic / pydantic-core | 2.13.4 / 2.46.4 | 通用 wheel / Windows cp313 wheel | 统一 Runtime、Robot 和三个 Skill 的约束 |
-| Pinocchio / libpinocchio | 3.9.0 | 无匹配的 PyPI Windows wheel | 建立 Windows 原生构建及可重定位 wheel |
-| EigenPy / Coal / libcoal | 3.12.0 / 3.0.2 / 3.0.2 | 无匹配的 PyPI Windows wheel | 与 Pinocchio 一起构建、验证 |
-| cmeel 原生依赖 | Boost 1.89.0、urdfdom 4.0.1、tinyxml2 10.0.0、console-bridge 1.0.2.3、Assimp 6.0.5、OctoMap 1.10.0、Qhull 8.0.2.1、zlib 1.3.2 | 当前这些 wheel 无 Windows 候选 | 确定源码版本、功能开关和 Windows DLL/头文件发布方式 |
-| uvloop | 0.22.1 | 无 Windows wheel | 按依赖平台 marker 排除，使用 Windows asyncio；无需移植 uvloop |
+| MuJoCo | 3.4.0 | Has `cp313-cp313-win_amd64` wheel | Use the upstream wheel; test physics stepping and rendering |
+| NumPy | 2.3.5 | Has `cp313-cp313-win_amd64` wheel | Verify the NumPy ABI with self-built Pinocchio/EigenPy |
+| Ruckig | 0.19.4 | Has `cp313-cp313-win_amd64` wheel | Prefer reuse; test trajectory generation; self-build as a reproduction option |
+| GLFW | 2.10.2 | Has `py2.py3-none-win_amd64` wheel | Check the bundled DLL and the OpenGL context |
+| Pydantic / pydantic-core | 2.13.4 / 2.46.4 | Universal wheel / Windows cp313 wheel | Unify the constraints across Runtime, Robot and the three Skills |
+| Pinocchio / libpinocchio | 3.9.0 | No matching PyPI Windows wheel | Establish a Windows native build and a relocatable wheel |
+| EigenPy / Coal / libcoal | 3.12.0 / 3.0.2 / 3.0.2 | No matching PyPI Windows wheel | Build and verify together with Pinocchio |
+| cmeel native dependencies | Boost 1.89.0, urdfdom 4.0.1, tinyxml2 10.0.0, console-bridge 1.0.2.3, Assimp 6.0.5, OctoMap 1.10.0, Qhull 8.0.2.1, zlib 1.3.2 | Currently no Windows candidates for these wheels | Determine source versions, feature switches and the Windows DLL/header release form |
+| uvloop | 0.22.1 | No Windows wheel | Exclude via dependency platform markers, use Windows asyncio; no need to port uvloop |
 
-- [ ] 锁定 Windows CPython 3.13 标准 ABI 和 `uv.exe` 发行文件、来源及 SHA-256。验证完整标准库、`venv`、SSL、SQLite 和证书读取。uv 官方支持 Windows x64。[uv 平台说明](https://docs.astral.sh/uv/reference/policies/platforms/)
-- [ ] 选择可重定位、能创建 venv 的完整 Python 分发。不要直接假设 Python embeddable ZIP 等价于当前运行时；其默认不含 pip，常规 pip 依赖管理也不属于官方支持用途。[Python Windows 分发说明](https://docs.python.org/3.13/using/windows.html#the-embeddable-package)
-- [ ] 以同一 MSVC 工具链、CPython/NumPy ABI 构建 Pinocchio 依赖链，固定 Boost.Python、Eigen、EigenPy、Coal、URDF 和 mesh 导入依赖。现有 Pinocchio 源码已有 Windows 分支；缺的是满足本项目版本组合的交付产物，并非库完全不支持 Windows。[Pinocchio 3.9.0](https://pypi.org/project/pin/3.9.0/)
-- [ ] 保留 URDF 和碰撞功能。Robot SDK 实际调用 `buildModelsFromUrdf`、`GeometryData`、碰撞检测，不能通过关闭这些能力来换取“编译通过”。[调用位置](https://github.com/insightos-community/robot-sdk/blob/59a1a8364c3d0330f1802c020e37544e0dbfa7c5/packages/r1pro/src/semantic_robot_sdk_r1pro/providers/local_kinematics.py#L53)
-- [ ] 确定 wheel 结构及 METADATA 依赖：不能让自建 wheel 继续要求不存在的 Windows cmeel wheel；也不能只复制 DLL 而漏掉依赖声明。
-- [ ] 收集 `.pyd`/`.dll` 的直接和递归依赖，处理 DLL 搜索目录、同名库冲突、VC Runtime 部署，记录实际加载位置。测试时清除构建工具和 Conda/Pixi 路径，确保运行不依赖构建机。[DLL 搜索规则](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)、[Python DLL 目录接口](https://docs.python.org/3.13/library/os.html#os.add_dll_directory)
-- [ ] 生成 Windows 完整离线 wheelhouse 和带哈希的锁文件；运行 `pip check`、URDF/mesh 读取、FK/IK、碰撞和 Ruckig 数值测试。
+- [ ] Pin the Windows CPython 3.13 standard ABI and the `uv.exe` distribution files, sources and SHA-256. Verify the full standard library, `venv`, SSL, SQLite and certificate reading. uv officially supports Windows x64. [uv platform notes](https://docs.astral.sh/uv/reference/policies/platforms/)
+- [ ] Choose a relocatable full Python distribution that can create venvs. Do not directly assume the Python embeddable ZIP is equivalent to the current runtime; it does not include pip by default, and conventional pip dependency management is not an officially supported use case for it. [Python Windows distribution notes](https://docs.python.org/3.13/using/windows.html#the-embeddable-package)
+- [ ] Build the Pinocchio dependency chain with the same MSVC toolchain and CPython/NumPy ABI, pinning Boost.Python, Eigen, EigenPy, Coal, URDF and mesh-import dependencies. The existing Pinocchio source already has Windows branches; what is missing is deliverables meeting this project's version combination, not Windows support in the library itself. [Pinocchio 3.9.0](https://pypi.org/project/pin/3.9.0/)
+- [ ] Keep URDF and collision functionality. The Robot SDK actually calls `buildModelsFromUrdf`, `GeometryData` and collision detection; these capabilities must not be disabled in exchange for "it compiles". [Call site](https://github.com/insightos-community/robot-sdk/blob/59a1a8364c3d0330f1802c020e37544e0dbfa7c5/packages/r1pro/src/semantic_robot_sdk_r1pro/providers/local_kinematics.py#L53)
+- [ ] Determine the wheel structure and METADATA dependencies: a self-built wheel must not keep requiring nonexistent Windows cmeel wheels; nor may we only copy DLLs while dropping dependency declarations.
+- [ ] Collect direct and recursive dependencies of `.pyd`/`.dll`, handle DLL search directories, same-name library conflicts and VC Runtime deployment, and record actual load locations. During testing, clear build-tool and Conda/Pixi paths to ensure running does not depend on the build machine. [DLL search rules](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order), [Python DLL directory interface](https://docs.python.org/3.13/library/os.html#os.add_dll_directory)
+- [ ] Produce a complete Windows offline wheelhouse and a hashed lock file; run `pip check`, URDF/mesh loading, FK/IK, collision and Ruckig numerical tests.
 
-### Semantic-Framework 与 semantic-deployment
+### Semantic-Framework and semantic-deployment
 
-- [ ] 将 POSIX 实现拆到受 build tag 约束的文件，新增 Windows 实现。现有部分 `*_other.go` 使用 `!darwin`，会把 Windows 错当成 Linux。
-- [ ] 替换 `Setpgid`、负 PID 发信号、`Getpgid`、`Signal(0)`、`/proc/<pid>` 检查；实现启动、存活、身份校验、停止、超时和日志采集。
-- [ ] 用 Windows Job Objects 等机制管理本实例拥有的进程树，检查子进程加入时机与句柄继承。保留现有“先 hold/stop、确认后回收”的顺序；停止未确认时保留 interrupted 状态，不能因关闭 Job 句柄而无条件杀掉仍需保留的进程。异常退出策略需单独设计并测试。[Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
-- [x] 将 semantic-deployment 的实例 `Flock` 接入 Linux/macOS/Windows 平台文件锁；覆盖并发启动、异常退出与锁恢复，见上方 PR #5。其他进程平台接口仍待适配。
-- [ ] 检查 Runtime 管理器、Robot supervisor、Pilot Skill worker、CLI 的所有启动路径，统一 `.exe`、`Scripts/python.exe`、参数数组及 UTF-8 处理。
-- [ ] 适配 host command 工具：当前 `/bin/sh`、`setsid` 和 POSIX 引号不能直接用于 Windows；定义 PowerShell/cmd 执行语义和取消行为。
-- [ ] 将所有后端选择统一为 Windows `glfw`，Web 继续请求 `auto`；明确拒绝不兼容的显式后端，保留可诊断错误。
-- [ ] 验证 SQLite、静态 Web gateway 和文件打包/解包的 Windows 构建及行为；替换依赖外部 GNU tar/zstd 命令的路径。
+- [ ] Split POSIX implementations into build-tag-constrained files and add Windows implementations. Some existing `*_other.go` files use `!darwin`, which would misclassify Windows as Linux.
+- [ ] Replace `Setpgid`, signaling negative PIDs, `Getpgid`, `Signal(0)` and `/proc/<pid>` checks; implement startup, liveness, identity verification, stop, timeout and log collection.
+- [ ] Manage the process tree owned by this instance with Windows Job Objects or similar mechanisms; check child-process join timing and handle inheritance. Keep the existing "hold/stop first, reap after confirmation" order; when a stop is unconfirmed, retain the interrupted state — processes that must be kept must not be unconditionally killed by closing the Job handle. The abnormal-exit policy needs separate design and testing. [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)
+- [x] Wire semantic-deployment's instance `Flock` into Linux/macOS/Windows platform file locks; concurrent startup, abnormal exit and lock recovery covered — see PR #5 above. Other process platform interfaces remain to be adapted.
+- [ ] Review all startup paths of the Runtime manager, Robot supervisor, Pilot Skill worker and CLI; unify `.exe`, `Scripts/python.exe`, argument arrays and UTF-8 handling.
+- [ ] Adapt the host command tooling: the current `/bin/sh`, `setsid` and POSIX quoting cannot be used directly on Windows; define PowerShell/cmd execution semantics and cancellation behavior.
+- [ ] Unify all backend selection to Windows `glfw`, with Web continuing to request `auto`; explicitly reject incompatible explicit backends and keep diagnosable errors.
+- [ ] Verify the Windows builds and behavior of SQLite, the static Web gateway and file packing/unpacking; replace paths that depend on external GNU tar/zstd commands.
 
-源码入口：[simulation/launcher.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/simulation/launcher.go)、
-[runtime_pack.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/simulation/runtime_pack.go#L265)、
-[pilot/installer.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/pilot/installer.go#L65)、
-[instance/runner.go](https://github.com/insightos-community/semantic-deployment/blob/ef9bbebf9a6d1f2c25350d575d242d52f29e8e42/internal/instance/runner.go)。
+Source entry points: [simulation/launcher.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/simulation/launcher.go),
+[runtime_pack.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/simulation/runtime_pack.go#L265),
+[pilot/installer.go](https://github.com/insightos-community/Semantic-Framework/blob/6d524fe4dbdfceb2029f7468619723274465c976/internal/pilot/installer.go#L65),
+[instance/runner.go](https://github.com/insightos-community/semantic-deployment/blob/ef9bbebf9a6d1f2c25350d575d242d52f29e8e42/internal/instance/runner.go).
 
-### AbilityFramework、Ability 与 SDK
+### AbilityFramework, Abilities and SDK
 
-- [ ] 为 xmake 增加 Windows/MSVC 配置并锁定依赖；移除构建时对 `date`、`python3` 命令和未转义源码路径的假设，验证带空格路径。
-- [ ] 适配 `getuid/getgroups/gid_t`、Unix 执行权限位，以及 `arpa/inet.h`、`ifaddrs.h`、`ioctl` 等接口。使用 Windows 进程/网络 API；覆盖默认网卡、MAC、mDNS 和多网卡发现。
-- [ ] 增加 Windows HostInfo 和统一的架构命名，替换 `uname`、`/etc/os-release`。包、bundle、host 的 OS/arch 校验必须一致。
-- [ ] 为 7 个 Ability 增加原生启动描述或轻量 `.exe` 入口，直接调用随包 Python；传递 UUID、JSON 配置和 `ABILITY_ROOT`，测试参数引号。不要只修改包名或架构标签。
-- [ ] 调整 Ability-SDK-Python 的父进程退出处理和自退出逻辑；Linux `prctl` 在 Windows 不生效，Windows `SIGTERM` 行为也不能当成 POSIX 优雅退出。
-- [ ] 更新 `ability-scaffold`，确保新生成的 Ability 能使用相同 Windows 启动协议。
-- [ ] 更新 `ability-runtime` bundle 模板、Python 可执行路径及 Windows 平台元数据；验证安装后读取的路径不含构建机绝对路径。
-- [ ] 运行 Robot SDK、Skill worker、JSON-RPC、心跳、重复启动、停止失败保留和子进程清理测试。
+- [ ] Add a Windows/MSVC configuration to xmake and pin dependencies; remove build-time assumptions about `date`, `python3` commands and unescaped source paths; verify paths with spaces.
+- [ ] Adapt `getuid/getgroups/gid_t`, Unix execute-permission bits, and interfaces such as `arpa/inet.h`, `ifaddrs.h` and `ioctl`. Use Windows process/network APIs; cover the default NIC, MAC, mDNS and multi-NIC discovery.
+- [ ] Add Windows HostInfo and unified architecture naming, replacing `uname` and `/etc/os-release`. OS/arch validation of packages, bundles and hosts must be consistent.
+- [ ] Add native launch descriptions or lightweight `.exe` entry points for the 7 Abilities, directly invoking the bundled Python; pass the UUID, JSON configuration and `ABILITY_ROOT`; test argument quoting. Do not only change package names or architecture tags.
+- [ ] Adjust Ability-SDK-Python's parent-process exit handling and self-exit logic; Linux `prctl` does not work on Windows, and Windows `SIGTERM` behavior cannot be treated as a POSIX graceful exit either.
+- [ ] Update `ability-scaffold` so newly generated Abilities can use the same Windows launch protocol.
+- [ ] Update the `ability-runtime` bundle template, Python executable path and Windows platform metadata; verify that paths read after installation contain no build-machine absolute paths.
+- [ ] Run Robot SDK, Skill worker, JSON-RPC, heartbeat, repeated-startup, stop-failure retention and child-process cleanup tests.
 
-源码入口：[subprocessmgr.cpp](https://github.com/insightos-community/AbilityFramework/blob/b5e8e443d1a8f3911c19a43a3842dcbbe92b8cb1/src/subprocessmgr/subprocessmgr.cpp)、
-[discovery_utils.cpp](https://github.com/insightos-community/AbilityFramework/blob/b5e8e443d1a8f3911c19a43a3842dcbbe92b8cb1/src/util/discovery_utils.cpp)、
-[Ability Bash 入口](https://github.com/insightos-community/r1pro-ability/blob/76e670f0cb8874b12fadbeb9acc9a88da7fb9b9c/abilities/r1pro-navigation/bin/ability)。
+Source entry points: [subprocessmgr.cpp](https://github.com/insightos-community/AbilityFramework/blob/b5e8e443d1a8f3911c19a43a3842dcbbe92b8cb1/src/subprocessmgr/subprocessmgr.cpp),
+[discovery_utils.cpp](https://github.com/insightos-community/AbilityFramework/blob/b5e8e443d1a8f3911c19a43a3842dcbbe92b8cb1/src/util/discovery_utils.cpp),
+[Ability Bash entry point](https://github.com/insightos-community/r1pro-ability/blob/76e670f0cb8874b12fadbeb9acc9a88da7fb9b9c/abilities/r1pro-navigation/bin/ability).
 
-## P1：可交付的安装包与仿真闭环
+## P1: deliverable installer and simulation closed loop
 
-### MuJoCo 与显示
+### MuJoCo and display
 
-- [ ] 在 Windows 测试现有 `mujoco==3.4.0` wheel、DLL、MJCF/URDF 和当前拆码垛资产。官方 MuJoCo 已支持 Windows。[官方说明](https://mujoco.readthedocs.io/en/3.4.0/programming/index.html)、[指定版本 wheel](https://pypi.org/project/mujoco/3.4.0/#files)
-- [ ] 修改 Runtime 的 Pydantic 平台约束并重新生成锁文件，确保三个 Skill 所需 2.13.4 与 Windows Runtime 一致。
-- [ ] 验证 `glfw` 创建隐藏窗口/离屏帧缓冲、RGB/depth、连续 Web 视频流，以及线程和上下文销毁；`headless=true` 不自动证明系统不需要可用的图形环境。
-- [ ] 在 Windows 11 的实际登录桌面及显卡驱动环境验证 NVIDIA/AMD/Intel 中首批承诺支持的配置；分别记录 `GL_VENDOR`、`GL_RENDERER`、OpenGL 版本、分辨率、帧率及 CPU/GPU 使用情况。
-- [ ] 单独检查 RDP、锁屏、断开显示器后的行为，明确支持边界。首版使用用户会话启动，Windows Service 图形会话另行验证。
-- [ ] GPU 路线优先采用显卡厂商的 Windows OpenGL 驱动。Mesa 软件回退作为可选后续方案；不用将 Linux musl 的 libdrm/elfutils/整套 Mesa 构建链直接移植为 Windows 必选依赖。
+- [ ] Test the existing `mujoco==3.4.0` wheel, DLLs, MJCF/URDF and the current depalletizing assets on Windows. Official MuJoCo already supports Windows. [Official notes](https://mujoco.readthedocs.io/en/3.4.0/programming/index.html), [wheel of the specified version](https://pypi.org/project/mujoco/3.4.0/#files)
+- [ ] Modify the Runtime's Pydantic platform constraints and regenerate the lock file, ensuring the 2.13.4 required by the three Skills is consistent with the Windows Runtime.
+- [ ] Verify `glfw` creating hidden windows/off-screen framebuffers, RGB/depth, continuous Web video streaming, and thread and context destruction; `headless=true` does not by itself prove the system needs no usable graphics environment.
+- [ ] On a real logged-in Windows 11 desktop with graphics drivers, verify the first batch of promised NVIDIA/AMD/Intel configurations; record `GL_VENDOR`, `GL_RENDERER`, OpenGL version, resolution, frame rate and CPU/GPU usage separately.
+- [ ] Separately check behavior under RDP, screen lock and disconnected monitors, and define the support boundary. The first version launches in a user session; Windows Service graphics sessions are verified separately.
+- [ ] The GPU route prefers the graphics vendor's Windows OpenGL driver. A Mesa software fallback is an optional follow-up; there is no need to port the Linux musl libdrm/elfutils/whole Mesa build chain into a mandatory Windows dependency.
 
-### quick-start 与网站
+### quick-start and the website
 
-- [ ] 增加 `artifacts/windows` 构建器、独立 sources/requirements 锁定、Windows manifest 和产物平台标识。
-- [ ] 首版输出离线 ZIP、`install.ps1` 和原生管理入口（候选 `semanticctl.exe`）；安装到用户目录，无需管理员或 Developer Mode。
-- [ ] 将现有 [installer](artifacts/runtime/installer.py)、[uninstall](artifacts/runtime/uninstall.py) 的 `fcntl`、`/proc`、`killpg`、shell launcher、`bin/python` 和平台检测拆成 Windows 实现。
-- [ ] 替换 `current` 符号链接等需要特殊权限的假设；考虑显式活动版本指针、拷贝或经验证的 junction 方案。处理 reparse point、大小写、保留文件名、盘符、中文/空格、长路径和跨盘。
-- [ ] 创建 venv 时引用包内 Python；安装步骤使用完整离线 wheelhouse，避免依赖系统 Python、PATH 或用户预装 pip。
-- [ ] 实现 start/stop/status/doctor/logs/configure/uninstall，默认本机监听；用户需要局域网访问时才配置对应规则，保留 Windows 自身软件源和代理配置。
-- [ ] Windows 正在运行的 EXE/DLL 可能锁定文件：采用停机后切换版本、校验和回滚，卸载保留数据，明确升级/数据迁移边界。
-- [ ] 下载入口验证 tag、平台、大小和 SHA-256；安全解压处理 Windows 路径规则。离线包导入也执行相同验证。
-- [ ] 完成 GitHub Release 发布后，再把网站选择器、中英文 README 和 PowerShell 安装指令加入 Windows 选项；不要提前公布不存在的下载地址。
+- [ ] Add an `artifacts/windows` builder, standalone sources/requirements pinning, a Windows manifest and artifact platform identifiers.
+- [ ] The first version outputs an offline ZIP, `install.ps1` and a native management entry point (candidate `semanticctl.exe`); installs into the user directory without administrator rights or Developer Mode.
+- [ ] Split the `fcntl`, `/proc`, `killpg`, shell launcher, `bin/python` and platform detection of the existing [installer](artifacts/runtime/installer.py) and [uninstall](artifacts/runtime/uninstall.py) into Windows implementations.
+- [ ] Replace assumptions that need special privileges, such as the `current` symlink; consider an explicit active-version pointer, copying or a verified junction scheme. Handle reparse points, case sensitivity, reserved file names, drive letters, Chinese characters/spaces, long paths and cross-drive moves.
+- [ ] Reference the bundled Python when creating venvs; installation steps use the complete offline wheelhouse, avoiding dependence on system Python, PATH or a user-preinstalled pip.
+- [ ] Implement start/stop/status/doctor/logs/configure/uninstall, listening on localhost by default; configure corresponding rules only when the user needs LAN access, keeping Windows' own software sources and proxy configuration.
+- [ ] Running EXE/DLLs on Windows may lock files: switch versions after shutdown with checksums and rollback; uninstall preserves data; define upgrade/data-migration boundaries clearly.
+- [ ] The download entry verifies tag, platform, size and SHA-256; safe extraction handles Windows path rules. Offline package imports undergo the same verification.
+- [ ] Only after the GitHub Release is published, add the Windows option to the website selector, the Chinese and English READMEs and the PowerShell installation instructions; do not announce download addresses that do not exist yet.
 
-## 涉及仓库与发布边界
+## Repositories involved and release boundaries
 
-| 仓库/组 | 首批工作 | 交付 |
+| Repository/group | First-batch work | Deliverable |
 | --- | --- | --- |
-| Semantic-Framework、semantic-deployment | Windows 进程、锁、路径、后端与测试 | Server/CLI/Pilot/supervisor `.exe` |
-| AbilityFramework | MSVC/xmake、系统与网络接口、生命周期 | EXE、必要 DLL、测试与加载报告 |
-| Ability-SDK-Python、ability-scaffold | 生命周期和启动模板 | 通用 wheel/模板及 Windows 测试 |
-| r1pro-ability、ability-runtime | 7 个原生入口、bundle 路径/平台 | Windows Ability 包、bundle |
-| robot-sdk、robot-skill | ABI、URDF/碰撞、worker/Skill 安装测试 | 可复用 Python 包；必要时修订发布 |
-| mujoco-runtime | 依赖约束、启动和 GLFW 渲染验证 | Runtime wheel、验证报告 |
-| semantic-web、semantic-docs、mujoco-asset | 保持 `auto`、校验静态资产路径、更新说明 | 已验证的通用静态资源，可复用现有 Release |
-| pinocchio | Windows 原生依赖链和 wheel 打包 | cp313 Windows wheel、依赖包/清单 |
-| 现有 assimp、tinyxml2、qhull、zlib forks | 依赖链需要时补 Windows 构建 | DLL/开发前缀或 wheel |
-| Eigen、Boost、EigenPy、Coal、URDFDOM/headers、console_bridge、OctoMap | 固定源码和构建顺序；组织目前没有这些同名独立仓库 | 可先由 Pinocchio CI 构建；需要独立维护补丁或独立 Release 时再纳入 fork |
-| ruckig、mujoco forks | 优先复用上游已有 Windows wheel；有补丁/自主发布需要再增加流程 | 固定版本的 Windows 产物 |
-| quick-start | 离线安装器、聚合 Release、网站 | 完整 Windows 安装包 |
+| Semantic-Framework, semantic-deployment | Windows processes, locks, paths, backends and tests | Server/CLI/Pilot/supervisor `.exe` |
+| AbilityFramework | MSVC/xmake, system and network interfaces, lifecycle | EXE, necessary DLLs, tests and load reports |
+| Ability-SDK-Python, ability-scaffold | Lifecycle and launch templates | Universal wheels/templates and Windows tests |
+| r1pro-ability, ability-runtime | 7 native entry points, bundle paths/platform | Windows Ability packages, bundle |
+| robot-sdk, robot-skill | ABI, URDF/collision, worker/Skill installation tests | Reusable Python packages; revised releases when necessary |
+| mujoco-runtime | Dependency constraints, startup and GLFW rendering validation | Runtime wheel, validation report |
+| semantic-web, semantic-docs, mujoco-asset | Keep `auto`, verify static asset paths, update documentation | Verified universal static assets; existing Releases reusable |
+| pinocchio | Windows native dependency chain and wheel packaging | cp313 Windows wheel, dependency package/manifest |
+| Existing assimp, tinyxml2, qhull, zlib forks | Add Windows builds when the dependency chain needs them | DLLs/development prefixes or wheels |
+| Eigen, Boost, EigenPy, Coal, URDFDOM/headers, console_bridge, OctoMap | Pin sources and build order; the organization currently has no separate repositories under these names | Can be built by Pinocchio CI first; adopt into forks when patches need independent maintenance or a separate Release |
+| ruckig, mujoco forks | Prefer reusing upstream Windows wheels; add processes only when patches/self-publishing are needed | Windows artifacts at pinned versions |
+| quick-start | Offline installer, aggregated Release, website | Complete Windows installation package |
 
-构建顺序建议：基础 C/C++ 依赖 → EigenPy/Coal/URDF → Pinocchio wheel → Robot 依赖验证；
-Framework/deployment 和 AbilityFramework 的平台接口可以同时推进；上述条件满足后再组装 installer。
-不是每个依赖都必须新 fork，也不是每个通用 wheel/资产都必须重复发布。
+Suggested build order: base C/C++ dependencies → EigenPy/Coal/URDF → Pinocchio wheel → Robot dependency verification;
+the Framework/deployment and AbilityFramework platform interfaces can proceed in parallel; assemble the installer once the above conditions are met.
+Not every dependency needs a new fork, and not every universal wheel/asset needs to be republished.
 
-## CI、验收与交付阶段
+## CI, acceptance and delivery stages
 
-- [ ] 使用固定的 GitHub Windows 标准 runner 镜像和工具链做构建、单元测试、数学/物理测试及离线安装检查，避免依赖 `windows-latest` 漂移。[runner 规格](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-- [ ] 图形测试另设具有实际 Windows 桌面和显卡驱动的 runner；普通 hosted runner 成功不能代替 GPU/桌面验证。已有 9700X + RTX 5060/5060 Ti Windows 主机可作为候选验证机，具体结果以实测为准。
-- [ ] CI 清理/隔离预装 Python、Conda、编译器及 DLL 搜索路径，再安装实际发行 ZIP；在不允许下载依赖的条件下验证安装。
-- [ ] 从场景目录创建拆码垛项目，等待 scene running、`r1_pro_tote_gripper-1` 的 Runtime ready、7 个 Ability healthy、Pilot online、3 个 Skill installed/enabled。
-- [ ] 将物理步进、Runtime ready、RGB/depth 渲染和业务任务分别报告，不以 HTTP 健康检查替代完整启动。
-- [ ] 验证正常 release、重复 start/stop、失败诊断、并发安装、端口冲突、超时、进程异常退出；停止后不留自有子进程，不误杀其他 Python/应用。
-- [ ] 验证带中文和空格的路径、普通用户权限、离线重装、配置/数据保留、卸载与必要回滚。
-- [ ] 发布过程先创建 draft、上传并核对资产、再公开；支持网络失败后的幂等恢复。保存 sources、依赖锁、SHA256SUMS、DLL 加载报告和完整验证报告。
-- [ ] 对 Linux glibc、musl、macOS 保留回归，确保平台拆分没有改变已有安装/停止行为。
+- [ ] Use pinned GitHub standard Windows runner images and toolchains for builds, unit tests, math/physics tests and offline-installation checks; avoid depending on `windows-latest` drift. [Runner specifications](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+- [ ] Run graphics tests on a separate runner with a real Windows desktop and graphics drivers; success on a normal hosted runner cannot substitute for GPU/desktop validation. An existing 9700X + RTX 5060/5060 Ti Windows host is a candidate validation machine; actual results are subject to measurement.
+- [ ] CI cleans/isolates pre-installed Python, Conda, compilers and DLL search paths, then installs the actual release ZIP; verify installation under conditions where downloading dependencies is not allowed.
+- [ ] Create a depalletizing project from the scene catalog; wait for scene running, Runtime ready of `r1_pro_tote_gripper-1`, 7 Abilities healthy, Pilot online, and 3 Skills installed/enabled.
+- [ ] Report physics stepping, Runtime ready, RGB/depth rendering and business tasks separately; do not substitute an HTTP health check for a full startup.
+- [ ] Verify graceful release, repeated start/stop, failure diagnostics, concurrent installation, port conflicts, timeouts and abnormal process exit; after stopping, no own child processes remain and no other Python/applications are killed by mistake.
+- [ ] Verify paths with Chinese characters and spaces, normal-user privileges, offline reinstallation, configuration/data retention, uninstall and necessary rollback.
+- [ ] The release process creates a draft first, uploads and verifies assets, then goes public; supports idempotent recovery after network failures. Preserve sources, dependency locks, SHA256SUMS, DLL load reports and the full verification report.
+- [ ] Keep regression for Linux glibc, musl and macOS to ensure the platform split did not change existing install/stop behavior.
 
-| 阶段 | 完成标准 |
+| Stage | Completion criteria |
 | --- | --- |
-| A：基础库与可执行程序 | Pinocchio 数学/URDF/碰撞测试通过；Framework、supervisor、AbilityFramework 在 Windows 构建并运行 |
-| B：本机项目闭环 | 三层启动就绪、7 个 Ability/3 个 Skill 正常、场景安全停止后无残留 |
-| C：安装包预览 | 实际离线 ZIP 在干净 Windows 11 安装/重装/卸载通过，发布验证报告 |
-| D：图形验证与正式分发 | 承诺的显卡/桌面组合通过；按需要补 MSI/EXE 包装、代码签名、开始菜单/卸载登记 |
+| A: base libraries and executables | Pinocchio math/URDF/collision tests pass; Framework, supervisor and AbilityFramework build and run on Windows |
+| B: local project closed loop | Three-layer startup ready, 7 Abilities / 3 Skills normal, no residue after safe scene stop |
+| C: installer preview | The actual offline ZIP passes install/reinstall/uninstall on a clean Windows 11; verification report published |
+| D: graphics validation and formal distribution | The promised graphics-card/desktop combinations pass; add MSI/EXE packaging, code signing, Start Menu/uninstall registration as needed |
 
-A/B 阶段已通过；Windows Server 2022 标准 runner 上的完整离线 ZIP 验证也已通过，包含中文路径、7 个 Ability/3 个 Skill/Pilot、端口重新配置后再次启动、正常释放、本地重启和保留数据卸载。Robot、Runtime 与动态创建的 Skill venv 共用 CPython 3.13.15 基础运行时。`windows-v*` 标签触发相同验证并发布 ZIP、SHA256SUMS 和报告。Windows 11 实机、GPU 渲染和签名/MSI 仍是后续工作。
+Stages A/B have passed; the full offline ZIP verification on a Windows Server 2022 standard runner has also passed, covering Chinese paths, 7 Abilities / 3 Skills / Pilot, restart after port reconfiguration, graceful release, local restart and data-preserving uninstall. Robot, Runtime and dynamically created Skill venvs share the CPython 3.13.15 base runtime. `windows-v*` tags trigger the same verification and publish the ZIP, SHA256SUMS and the report. Physical Windows 11 machines, GPU rendering and signing/MSI remain follow-up work.

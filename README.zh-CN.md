@@ -152,7 +152,7 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 - 端口：BEHAVIOR 用 Runtime `18090`、Ability `18100-18199`、策略服务 `20080`；LIBERO 用 `18100-18199`，同机并存要分配不同端口段。
 - 装完要到 Web「场景配置 → 添加兼容场景」，并把 Ability 与模型绑定到机器人——安装只把场景注册到场景目录。
 
-安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.md)，场景总入口见 [`extensions`](extensions/README.zh-CN.md)，各场景操作手册见 [LIBERO](extensions/libero/README.zh-CN.md) 与 [BEHAVIOR](extensions/isaac/README.zh-CN.md)；源码编译路径见 TUI 阶段 8。
+安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.zh-CN.md)，场景总入口见 [`extensions`](extensions/README.zh-CN.md)，各场景操作手册见 [LIBERO](extensions/libero/README.zh-CN.md) 与 [BEHAVIOR](extensions/isaac/README.zh-CN.md)；源码编译路径见 TUI 阶段 8。
 
 ## 🛠 源码构建
 
@@ -230,7 +230,7 @@ TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托
 - 步骤失败会停止队列；重跑前查看 `.tui-logs/`。
 - 密码和模型 Key 仅保存在本地，不向不可信网络开放开发服务。
 
-[详细 TUI 指南](semantic-installer-README.md) · [排障笔记](NOTES.md)
+[详细 TUI 指南](semantic-installer-README.zh-CN.md) · [排障笔记](NOTES.md)
 
 ## 许可证
 

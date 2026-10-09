@@ -684,5 +684,5 @@ Runtime 包的 `license` 都是 `behavior-assets`，安装器据此自动补 `--
 ### 设计依据
 
 清单里 `prerequisites` / `post_install` / `host_requirements` / `ports` 的表达方式，以及通道布局与
-发布流程，见 [`../../docs/extensions.md`](../../docs/extensions.md)；总入口与目录约定见
+发布流程，见 [`../../docs/extensions.zh-CN.md`](../../docs/extensions.zh-CN.md)；总入口与目录约定见
 [`../README.zh-CN.md`](../README.zh-CN.md)。
