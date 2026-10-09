@@ -1,8 +1,13 @@
-# 安装器品牌资源
+# Installer branding assets
 
-`ios.png` 为项目提供的品牌图，用作桌面入口图标。
-`banner.json` 是该图的蓝色轮廓（`#`）与金色星光（`*`）的 ASCII 采样，
-按终端字符约 1:2 的比例生成 20、32、48 列变体，运行时无需 Pillow、外部字体或图片库。
-该 ASCII 资源保留供历史版本参考；从 .10 起，当前终端欢迎页仅显示文字，不再绘制图形。
-桌面快捷方式仍使用原始 PNG。
-颜色只在支持的交互终端启用；`NO_COLOR` 可禁用颜色。
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+`ios.png` is the branding image provided by the project, used as the desktop
+entry icon. `banner.json` is an ASCII sampling of that image's blue outline
+(`#`) and golden starlight (`*`), generated at roughly a 1:2 terminal character
+ratio in 20-, 32-, and 48-column variants, requiring no Pillow, external fonts,
+or image libraries at runtime. This ASCII asset is kept for historical
+reference; since .10, the current terminal welcome page shows text only and no
+longer draws graphics. The desktop shortcut still uses the original PNG.
+Colors are only enabled on interactive terminals that support them;
+`NO_COLOR` disables colors.
