@@ -1491,7 +1491,7 @@ def main():
     p.add_argument('--dry-run', action='store_true', help='uninstall: 只显示计划')
     extension.register(commands)
     a = parser.parse_args()
-    handler = getattr(a, 'extension', None)
+    handler = getattr(a, 'extension_handler', None)
     if handler:
         sys.exit(handler(a))
     if a.command == 'control' and a.action not in ('uninstall', 'reconfigure') and (a.yes or a.purge or a.dry_run):
@@ -2289,7 +2289,8 @@ def parse(text, source=None, base=None, repo=None):
         component = dict(_artifact(record, field), role=role, id=identifier_text,
                          previews=_previews(record.get('previews'), f'{field}.previews'),
                          project_default=_flag(record.get('project_default'), f'{field}.project_default'),
-                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'))
+                         robot_required=_flag(record.get('robot_required'), f'{field}.robot_required'),
+                         user_provided=_flag(record.get('user_provided'), f'{field}.user_provided'))
         key = (role, identifier_text)
         if key in seen:
             raise ManifestError(f'{field} 重复声明 {role}/{identifier_text}')
@@ -2601,6 +2602,9 @@ def verify(manifest, quiet=False):
         for name, artifact in artifacts:
             if progress:
                 progress.next(name)
+            if artifact.get('user_provided'):
+                rows.append((name, 'user-provided', '用户自备、不随通道分发，无通道摘要可校验'))
+                continue
             state, detail = _verify_one(artifact)
             rows.append((name, state, detail))
             if state != 'ok':
@@ -2659,11 +2663,18 @@ def artifact_paths(manifest, package_dir=None, workspace=None):
 
 
 def stage_artifact(artifact, path):
-    """Verify a staged artifact before it is installed. Raises ``ManifestError``."""
+    """Verify a staged artifact before it is installed. Raises ``ManifestError``.
+
+    User-provided artifacts are not distributed by the channel, so the manifest
+    digest cannot describe them; presence is all that is checked here and the
+    importing command validates the payload itself.
+    """
     path = Path(path)
     name = path.name
     if not path.is_file():
         raise ManifestError(f'缺少产物: {path}')
+    if artifact.get('user_provided'):
+        return path
     if path.stat().st_size != artifact['size']:
         raise ManifestError(f'{name} 大小不符: 期望 {artifact["size"]} 实际 {path.stat().st_size}')
     actual = digest(path)
@@ -2839,9 +2850,12 @@ def placeholder_artifacts(manifest):
     backfills real digests (``artifacts/build_extension.py``) before anything is
     published. Installing the template itself would sail past the plan, then fail
     in digest verification artifact by artifact, so name the problem up front.
+    User-provided artifacts are exempt: their bytes come from the operator, so
+    no channel digest exists to backfill.
     """
     records = [manifest['runtime']['pack'], *manifest['components']]
-    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256]
+    return [record['url'] for record in records if record.get('sha256') == PLACEHOLDER_SHA256
+            and not record.get('user_provided')]
 
 
 def install(manifest, root, project=None, robot=None, asset_root=None, accept_license=None,
@@ -2887,7 +2901,7 @@ def install(manifest, root, project=None, robot=None, asset_root=None, accept_li
         runner(command)
     unbound = unbound_skills(manifest, robot)
     if unbound:
-        report('note', 'Robot', '未随包绑定 Robot；到 Web 设备中心「添加 Pilot」后，在设备页安装这些 Skill: '
+        report('note', 'Robot', '未随包绑定 Robot；到 Web 设备中心的设备页安装这些 Skill（实体机器人主机需先「添加 Pilot」）: '
                + ', '.join(unbound))
     for item in manifest.get('post_install') or []:
         report('post', item['kind'], item['text'])
@@ -3029,7 +3043,7 @@ def register(parser):
     commands.add_argument('--dry-run', dest='dry_run', action='store_true', help='只打印将执行的命令')
     commands.add_argument('--yes', action='store_true', help='remove: 跳过确认')
     commands.add_argument('--quiet', action='store_true')
-    commands.set_defaults(extension=entry)
+    commands.set_defaults(extension_handler=entry)
     return commands
 SEMANTIC_MANAGER_SOURCE
   cat > "$1/uninstall.py" <<'SEMANTIC_MANAGER_SOURCE'
