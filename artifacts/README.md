@@ -1,85 +1,136 @@
-# Semantic 产物发布与一键部署
+# Semantic artifact release and one-click deployment
 
-这是与源码 TUI 安装器独立的**预编译产物部署**入口。安装端不克隆 Git、不运行
-Go/xmake/npm 构建；从构建机提取产物，在目标机初始化独立实例。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-仓库根目录提供两个独立安装入口。在 quick-start 的当前 main 中按下载来源选择一个：
+This is the **prebuilt artifact deployment** entry point, independent of the
+source-based TUI installer. The install side does not clone Git and does not run
+Go/xmake/npm builds; it extracts artifacts produced on the build machine and
+initializes a standalone instance on the target machine.
+
+The repository root provides two independent installation entry points. In the
+current main of quick-start, choose one by download source:
 
 ```bash
-bash ./install.sh --install-system-deps     # 阿里云 OSS stable，中文提示
-bash ./install-en.sh --install-system-deps  # GitHub Releases v0.1.1，英文提示
+bash ./install.sh --install-system-deps     # Alibaba Cloud OSS stable, Chinese prompts
+bash ./install-en.sh --install-system-deps  # GitHub Releases v0.1.1, English prompts
 ```
 
-两者均校验下载文件，默认 glibc 安装需要下载独立 Python 环境。OSS 与 GitHub 的版本号各自独立；
-指定版本使用 `--version`。免克隆下载命令及平台要求见根目录[中文 README](../README.zh-CN.md#从这里开始)和[English README](../README.md#start-here)。
+Both verify the downloaded files; the default glibc installation requires
+downloading a standalone Python environment. The OSS and GitHub version numbers
+are independent of each other; use `--version` to pin a version. For the
+clone-free download commands and platform requirements, see the root
+[中文 README](../README.zh-CN.md#从这里开始) and [English README](../README.md#start-here).
 
-原有 Python Release 入口仍可使用：
+The original Python Release entry point is still available:
 
 ```bash
 python3 semantic_installer.py --release --install-system-deps
 ```
 
-默认 `v0.1.1`，支持 `--tag`、`--dir`、`--yes` 等参数。下载组件用于组装时使用 `fetch_releases.py`；CI 使用 `build_from_releases.py`，无需重新编译子仓库。版本、校验与组装说明见 [Release CI](../docs/release-ci.zh-CN.md)。
+It defaults to `v0.1.1` and supports `--tag`, `--dir`, `--yes` and other
+options. Use `fetch_releases.py` when downloading components for assembly; CI
+uses `build_from_releases.py`, with no need to recompile the sub-repositories.
+For versioning, verification and assembly instructions, see [Release CI](../docs/release-ci.md).
 
-公开 OSS 与 GitHub Release 安装均无需 OSS 凭据；私有 OSS 对象可使用限时票据。
-向 OSS 发布制品的维护操作见 [OSS.zh-CN.md](OSS.zh-CN.md)。
+Installing from the public OSS or GitHub Releases requires no OSS credentials;
+private OSS objects can use time-limited tickets.
+For the maintenance operations of publishing artifacts to OSS, see [OSS.md](OSS.md).
 
-根目录脚本由安装器源码生成，不单独手改。修改 `artifacts/install.sh`、英文生成器或运行时模块后，运行：
+The root scripts are generated from the installer source and must not be edited
+by hand. After changing `artifacts/install.sh`, the English generator or the
+runtime modules, run:
 
 ```bash
 python3 artifacts/build_installers.py
 python3 artifacts/build_installers.py --check
 ```
 
-这会同步根目录的 `install.sh`、`install-en.sh` 和 `artifacts/install-en.sh`；CI 检查生成结果并验证独立脚本。
+This synchronizes the root `install.sh`, `install-en.sh` and
+`artifacts/install-en.sh`; CI checks the generated output and validates the
+standalone scripts.
 
-介绍与安装入口：<https://semantic.insightos.cn/>。静态站点源码、Nginx 配置和维护/回滚说明见 [site/README.md](site/README.md)。
+Introduction and installation entry: <https://semantic.insightos.cn/>. For the
+static site source, Nginx configuration and maintenance/rollback instructions,
+see [site/README.md](site/README.md).
 
-## 局域网、安装进度与桌面入口
+## LAN, installation progress and desktop entry
 
-新安装并开放 Web 局域网访问：
+Fresh install with LAN access to the Web UI enabled:
 
 ```bash
 curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- --install-system-deps
 ```
 
-新安装 Web 默认监听 `0.0.0.0:3000`，同时接受 `127.0.0.1` 与本机网卡 IPv4 的连接，无需重复绑定。
-`--lan` 仍作为兼容选项；可用 `--web-host <本机网卡IP> --web-port 3001` 指定网卡及端口，
-或 `--web-host 127.0.0.1` 限制为仅本机。API/WS 继续本机监听，通过 Web 网关统一代理。
-不会自动修改防火墙/云安全组：只向可信局域网开放 Web 端口（默认 3000），不要公开 API/WS/Runtime。
-所有网卡也可能包含公网网卡；公网请使用 HTTPS 反向代理与访问控制。HTTP 不加密。
+On a fresh install the Web UI listens on `0.0.0.0:3000` by default, accepting
+connections to both `127.0.0.1` and the host's NIC IPv4 addresses, so no extra
+binding is needed.
+`--lan` remains as a compatibility option; you can use `--web-host <NIC-IP> --web-port 3001`
+to select a NIC and port, or `--web-host 127.0.0.1` to restrict to the local machine.
+The API/WS services keep listening locally and are uniformly proxied through the Web gateway.
+The installer does not modify firewalls or cloud security groups automatically:
+only expose the Web port (default 3000) to trusted LANs; never expose the API/WS/Runtime publicly.
+"All NICs" may include a public NIC; for public access use an HTTPS reverse proxy
+with access control. HTTP is not encrypted.
 
-**已经安装的实例（包含 .4 版本）不需要重新部署数据库和运行包**，可以更新管理工具并开启局域网：
+**Already-installed instances (including .4 versions) do not need to redeploy the
+database and runtime packages**; you can update the management tooling and enable
+LAN access:
 
 ```bash
 curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
   --configure-existing --dir "$HOME/.local/share/semantic" --lan --desktop-shortcut
 ```
 
-此模式仍下载并校验新版本完整归档，但只安装 `bin/semantic-manager`、更新 `semanticctl`、监听配置和快捷入口。
-保留业务版本、原始发布包、数据库、密码与运行环境；保存旧 install.json 到 configs 下。
-需要变更监听时只重启 Web，已运行 Server 不被重启。不要将业务升级与管理工具更新混为一谈。
-已有实例不传网络参数会保留原监听配置；切换到本机 + 局域网请显式加 `--lan`。
-此模式也支持 `--web-port 3001` 修改 Web 端口，冲突会在停止原 Web 前被拒绝。
-自动化可加 `--yes`；`--no-start` 不启动服务（变更监听时仍停止原 Web）。
+This mode still downloads and verifies the full archive of the new version, but
+only installs `bin/semantic-manager`, updates `semanticctl`, the listen
+configuration and the shortcut entry.
+It preserves the business version, the original release package, the database,
+passwords and the runtime environment; the old install.json is saved under configs.
+When changing the listen configuration only the Web service is restarted; a
+running Server is not restarted. Do not confuse a business upgrade with a
+management-tooling update.
+An existing instance without network parameters keeps its original listen
+configuration; to switch to local + LAN, explicitly add `--lan`.
+This mode also supports `--web-port 3001` to change the Web port; conflicts are
+rejected before the original Web service is stopped.
+For automation add `--yes`; `--no-start` does not start services (the original
+Web is still stopped when changing the listen configuration).
 
-安装器显示真实下载字节进度、SHA-256/解包阶段、任务清单和各阶段耗时。
-交互终端采用单页任务表，原位刷新；成功后清理当前视口，只显示欢迎表单，不清除 shell 历史滚动区。
-失败时保留任务状态与日志位置，重定向输出不刷新或清屏。
-任务条百分比是已完成任务比例，不代表预计剩余时长。窄屏按字符宽度换行；非 TTY 不输出 ANSI 控制序列。
-欢迎页分为访问、管理、环境、提示四区：青色标题/命令、绿色成功、黄色凭据/注意事项、灰色辅助标签。
-终端欢迎页仅显示文字，不再渲染 ASCII 图标；标准 80×24 终端显示紧凑欢迎表单。
-`NO_COLOR=1` 禁用配色，`TERM=dumb` 禁用颜色和重绘。
-密码只向 `/dev/tty` 输出，不写 stdout/stderr 管道或安装日志；没有控制终端时提示密码文件位置。
-注意屏幕录制仍可能记录终端显示，分享截图前请遮挡密码。
+The installer shows real download byte progress, SHA-256/unpacking stages, the
+task list and the duration of each stage.
+Interactive terminals use a single-page task table refreshed in place; on
+success the current viewport is cleaned up to show only the welcome form,
+without clearing the shell scrollback history.
+On failure the task state and log location are preserved; redirected output does
+not refresh or clear the screen.
+The task-bar percentage is the proportion of completed tasks, not an estimate of
+remaining time. Narrow screens wrap by character width; non-TTY output contains
+no ANSI control sequences.
+The welcome page has four sections — access, management, environment and notes:
+cyan titles/commands, green success, yellow credentials/cautions, gray auxiliary labels.
+The terminal welcome page shows text only and no longer renders ASCII icons; a
+standard 80×24 terminal shows a compact welcome form.
+`NO_COLOR=1` disables colors; `TERM=dumb` disables colors and redrawing.
+Passwords are written only to `/dev/tty`, never to stdout/stderr pipes or the
+install log; when there is no controlling terminal, the location of the password
+file is shown instead.
+Note that screen recording can still capture the terminal display; mask
+passwords before sharing screenshots.
 
-自动检测桌面；`--desktop-shortcut` 显式创建，`--no-desktop-shortcut` 跳过。
-快捷方式使用原始 PNG，直接通过 `xdg-open` 打开本机 Web；不携带账号密码，也不会自动启动服务。
-支持 XDG 本地化桌面目录与应用菜单，多实例使用不同文件名。GNOME 等环境可能需要右键“允许启动”。
-无桌面/无 xdg-open 时提示跳过，不影响安装；卸载只删除本实例创建且未被用户修改的快捷方式。
-格式遵循 [Desktop Entry 规范](https://specifications.freedesktop.org/desktop-entry/latest-single/)。
+The desktop is auto-detected; `--desktop-shortcut` creates the shortcut
+explicitly, `--no-desktop-shortcut` skips it.
+The shortcut uses the original PNG and opens the local Web UI directly via
+`xdg-open`; it carries no account credentials and does not auto-start services.
+XDG-localized desktop directories and application menus are supported, and
+multiple instances use different file names. Environments such as GNOME may
+require right-click "Allow Launching".
+Without a desktop or xdg-open, a skip is reported without affecting the
+installation; uninstall only removes shortcuts created by this instance that the
+user has not modified.
+The format follows the [Desktop Entry specification](https://specifications.freedesktop.org/desktop-entry/latest-single/).
 
-完成页提供环境变量与启停指引，不擅自修改 shell 启动文件：
+The completion page provides environment variables and start/stop guidance, and
+does not modify shell startup files on its own:
 
 ```bash
 export SEMANTIC_HOME="$HOME/.local/share/semantic"
@@ -87,76 +138,96 @@ export PATH="$SEMANTIC_HOME/bin:$PATH"
 semanticctl start
 semanticctl status
 semanticctl stop
-semanticctl welcome  # 再次查看地址、环境变量指引及终端密码
+semanticctl welcome  # show the address, environment-variable guidance and terminal password again
 ```
 
-若需持久生效，将 export 两行加入 `~/.bashrc` 或 `~/.zshrc`。当前不配置开机自启动。
+To make it persistent, add the two export lines to `~/.bashrc` or `~/.zshrc`.
+Boot autostart is not configured at present.
 
-## 默认安装（本机与局域网）
+## Default installation (local machine and LAN)
 
 ```bash
 curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- --install-system-deps
 ```
 
-当前制品目标：Linux x86_64、glibc >= 2.28，完整 Server + Web + Native MuJoCo +
-R1 Pro Bundle。应用程序采用静态 ELF，glibc 门槛来自 uv/Python/Wheel 运行栈；
-满足门槛不等于所有发行版都已通过产品验收。实测范围见 [PORTABILITY.zh-CN.md](PORTABILITY.zh-CN.md)。
-以上门槛适用于默认 Linux x86_64 包。另提供 Apple Silicon / macOS 15.5+ 原生预览包，见 [macOS 构建说明](macos/README.md)；Windows 尚未提供安装包。
+Current artifact target: Linux x86_64, glibc >= 2.28, full Server + Web + Native
+MuJoCo + R1 Pro Bundle. The applications are static ELF binaries; the glibc
+threshold comes from the uv/Python/Wheel runtime stack;
+meeting the threshold does not mean every distribution has passed product
+acceptance. For the tested scope, see [PORTABILITY.md](PORTABILITY.md).
+The thresholds above apply to the default Linux x86_64 package. A native preview
+package for Apple Silicon / macOS 15.5+ is also available; see the [macOS build instructions](macos/README.md). No Windows installer is provided yet.
 
-Linux x86_64 使用额外的 `--musl` 参数可选择 musl 包；默认 glibc 路径不变。`--musl-runtime bundled`（默认）使用随包提供的 musl，可运行于 glibc 或 musl 宿主；`--musl-runtime system` 使用宿主已有的 musl。运行时选择保存在实例中，切换时使用新目录，不修改宿主 `/lib`。中英文脚本与 `python3 semantic_installer.py --release --musl` 均支持。可选包自带 CPython 3.13.15、NumPy 2.3.5、机器人依赖与 Mesa，详见 [musl/README.md](musl/README.md)。GPU 探测和软件回退入口见 [mesa/README.md](mesa/README.md)。
+On Linux x86_64, the additional `--musl` flag selects the musl package; the
+default glibc path is unchanged. `--musl-runtime bundled` (the default) uses the
+musl shipped with the package and runs on either glibc or musl hosts;
+`--musl-runtime system` uses the host's existing musl. The runtime choice is
+stored in the instance; switching uses a new directory and does not modify the
+host's `/lib`. Both the Chinese and English scripts and
+`python3 semantic_installer.py --release --musl` support this. The optional
+package bundles CPython 3.13.15, NumPy 2.3.5, robot dependencies and Mesa; see
+[musl/README.md](musl/README.md) for details. For GPU probing and the software
+fallback entry, see [mesa/README.md](mesa/README.md).
 
-入口形式参考 [Hermes 安装脚本](https://hermes-agent.nousresearch.com/install.sh)：
-支持管道启动、参数化路径和非交互安装；安装过程中从 `/dev/tty` 读取确认，
-不会把下载脚本的 stdin 当作用户输入。此实现没有直接执行参考脚本。
+The entry-point form is inspired by the [Hermes install script](https://hermes-agent.nousresearch.com/install.sh):
+it supports pipe launching, parameterized paths and non-interactive
+installation; during installation, confirmations are read from `/dev/tty`,
+so the stdin of the download script is never treated as user input. This
+implementation does not directly execute the reference script.
 
-## 目录结构
+## Directory structure
 
 ```text
 artifacts/
-├── install.sh                    # 可托管的 curl | bash 入口
-├── site/                         # 介绍页、静态站点容器与边缘反向代理配置
-├── build_release.py              # 构建机：提取、补齐、验证并打包
-├── build_native.py               # 独立构建静态 AbilityFramework 与 Go 程序
-├── test_container.py             # 一次性 Debian/Fedora 容器部署测试
-├── smoke_release.py              # 独立目录/端口的真实安装与管道重装测试
-├── smoke_uninstall.py            # 新实例：卸载保留数据、重装、管道彻底删除验证
-├── runtime/installer.py           # 安装/初始化/semanticctl 实现
-├── runtime/uninstall.py           # 卸载逻辑源码，同步内嵌于 install.sh，离线可用
-├── gateway/main.go                # Web 静态文件 + HTTP/WS 反向代理
-├── channels/stable.json           # 当前内部快照的下载路径、SHA256、大小
+├── install.sh                    # hostable curl | bash entry point
+├── site/                         # landing page, static-site container and edge reverse-proxy config
+├── build_release.py              # build machine: extract, complete, verify and package
+├── build_native.py               # standalone build of static AbilityFramework and Go programs
+├── test_container.py             # one-shot Debian/Fedora container deployment test
+├── smoke_release.py              # real installation in a separate dir/ports and piped reinstall test
+├── smoke_uninstall.py            # fresh instance: data-preserving uninstall, reinstall, piped full-removal verification
+├── runtime/installer.py           # install/initialize/semanticctl implementation
+├── runtime/uninstall.py           # uninstall logic source, embedded in install.sh, works offline
+├── gateway/main.go                # Web static files + HTTP/WS reverse proxy
+├── channels/stable.json           # download paths, SHA256 and sizes of the current internal snapshot
 └── releases/<version>/linux-x86_64/
-    ├── manifest.json             # 下载元数据；路径相对整个 artifacts/ 站点根
-    ├── release.json              # 组件版本、源码提交、平台和分发边界
+    ├── manifest.json             # download metadata; paths relative to the whole artifacts/ site root
+    ├── release.json              # component versions, source commits, platform and distribution boundaries
     ├── semantic-<version>-linux-x86_64.tar.gz
     └── semantic-<version>-linux-x86_64.tar.gz.sha256
 ```
 
-归档内部按组件存放，不打包完整工作区：
+Inside the archive, content is stored by component; the full workspace is not
+packaged:
 
 ```text
 bin/                semantic-server / semantic / semantic-pilot / Web gateway / uv
-web/                Vite production 静态文件（不用 npm run dev）
-robot-bundles/      AbilityFramework、Pilot、七类 Ability ZIP、Wheel、部署模板
-robot-skills/       grasp-object / semantic-navigation / place-object 发布 ZIP
-runtime-packs/      Native MuJoCo 正式 Runtime Pack（Wheelhouse、锁、场景、许可）
-assets/mujoco/      受版本控制的模型、网格、场景、资产目录
-defaults/          来自源码模板的干净 Server 配置（不读取运行中配置）
-release.json        组件版本及来源提交
-native-linkage.json  应用 ELF 静态链接检查与 uv 的直接 glibc 符号基线
-files.json          每个产物的 SHA256
-installer.py        初始化逻辑
+web/                Vite production static files (no npm run dev)
+robot-bundles/      AbilityFramework, Pilot, seven Ability ZIPs, Wheels, deployment templates
+robot-skills/       grasp-object / semantic-navigation / place-object release ZIPs
+runtime-packs/      official Native MuJoCo Runtime Pack (wheelhouse, lock, scenes, licenses)
+assets/mujoco/      version-controlled model, mesh, scene and asset directories
+defaults/          clean Server configuration from the source templates (no running config is read)
+release.json        component versions and source commits
+native-linkage.json  static-linkage check of the application ELFs and uv's direct glibc symbol baseline
+files.json          SHA256 of every artifact
+installer.py        initialization logic
 ```
 
-不提取 `.env`、用户数据库、Project/Task/会话、Pilot 凭据、运行日志、`.git`、
-`node_modules`、现有 `.venv` 或指向构建机的 Python 符号链接。
-Robot 使用 Python 3.13；当前 Native MuJoCo Pack 使用 Python 3.10.19。
-二者在目标目录分别建环境，不能直接搬运 Conda 或已安装的 venv。
+The archive does not extract `.env`, user databases, Projects/Tasks/sessions,
+Pilot credentials, run logs, `.git`, `node_modules`, existing `.venv`
+directories, or Python symlinks pointing at the build machine.
+Robot uses Python 3.13; the current Native MuJoCo Pack uses Python 3.10.19.
+The two build separate environments in the target directory; you cannot copy a
+Conda or an already-installed venv over.
 
-## 在构建机生成发布包
+## Building release packages on the build machine
 
-先用现有 TUI 完成源码构建（至少 3.2、5.1～5.4），准备好 uv、Go、Node/npm、
-tar/zstd、readelf、xmake、C/C++ 静态库与 musl-gcc（Ubuntu 构建机对应 musl-tools）。
-Web 有已安装依赖时直接构建 production；否则先在 Web 仓执行 `npm ci`。
+First complete the source build with the existing TUI (at least stages 3.2,
+5.1–5.4), and prepare uv, Go, Node/npm, tar/zstd, readelf, xmake, C/C++ static
+libraries and musl-gcc (musl-tools on an Ubuntu build machine).
+If the Web repository already has dependencies installed, build production
+directly; otherwise run `npm ci` in the Web repository first.
 
 ```bash
 python -B artifacts/build_native.py
@@ -164,29 +235,43 @@ uv run --no-project --with PyYAML python artifacts/build_release.py \
   --version 0.5.0-dev.20260910.3
 ```
 
-`build_native.py` 在 `.build/` 的独立源码副本构建 AbilityFramework，开启 `fwk-static`，
-强制第三方库从源码静态构建，不修改原仓库的 xmake 配置或现有 `.output`。
-Go 程序保留 CGO，使用 `CC=musl-gcc`、`musl,netgo,osusergo` 标签及外部静态链接；
-包含 Server、CLI、Pilot、Robot Instance。构建日志默认保存在 `.build/native-static/`。
-可用 `--component ability` 或 `--component server` 分别构建。
+`build_native.py` builds AbilityFramework in an independent source copy under
+`.build/`, enables `fwk-static`, forces third-party libraries to be built
+statically from source, and does not modify the original repository's xmake
+configuration or the existing `.output`.
+The Go programs keep CGO, using `CC=musl-gcc`, the `musl,netgo,osusergo` tags
+and external static linking; they include Server, CLI, Pilot and Robot Instance.
+Build logs are saved under `.build/native-static/` by default.
+Use `--component ability` or `--component server` to build them separately.
 
-发布器默认读取 `.build/native-static/`，也可传 `--native-dir DIR` 提供已验证静态产物。
-五个程序必须齐全，且 `readelf` 检查不得有 `PT_INTERP` 或 `DT_NEEDED`；不允许静默
-回退到旧动态版本。Bundle 中的 AbilityFramework/Pilot/Robot Instance 同步替换。
+The release builder reads `.build/native-static/` by default; you can also pass
+`--native-dir DIR` to provide already-verified static artifacts.
+All five programs must be present, and `readelf` checks must show no `PT_INTERP`
+or `DT_NEEDED`; silently falling back to the old dynamic versions is not
+allowed. The AbilityFramework/Pilot/Robot Instance inside the Bundle are
+replaced in sync.
 
-构建器检查真实 LFS 文件、Wheel ZIP、三个 Skill 的精确版本与 Bundle 模板一致性。
-Runtime Pack 使用 `uv.lock` 导出固定依赖，再转为不含源码路径的 Wheel-only 锁；
-场景目录使用当前 Framework schema 的源码模板，避免 Runtime 仓旧 authoring
-样例与当前 Server 不兼容。现有 Python 环境不会进入发布包。
+The builder checks real LFS files, Wheel ZIPs, the exact versions of the three
+Skills and the consistency of the Bundle templates.
+The Runtime Pack exports pinned dependencies from `uv.lock`, then converts them
+into a wheel-only lock without source paths;
+the scene directory uses the source templates of the current Framework schema,
+so that outdated authoring samples in the Runtime repository do not become
+incompatible with the current Server. Existing Python environments do not go
+into the release package.
 
-相同版本目录拒绝覆盖。重建应使用新版本。`--runtime-pack FILE` 可显式复用已经
-验证的 Runtime Pack；**仅在 Runtime 源码、锁和场景模板未变时使用**。
-首次构建会在 `.build/native-mujoco.runtime.tar.zst` 留下可复用 Pack。
-`--skip-web-build` 只适用于已生成并确认正确的 `semantic-web/dist`。
+Existing version directories refuse to be overwritten. Rebuilds should use a new
+version. `--runtime-pack FILE` explicitly reuses an already-verified Runtime
+Pack; **use it only when the Runtime source, lock and scene templates are
+unchanged**.
+The first build leaves a reusable Pack at `.build/native-mujoco.runtime.tar.zst`.
+`--skip-web-build` applies only to an already generated and confirmed
+`semantic-web/dist`.
 
-当前 `channels/stable.json` 是内部开发快照通道，不意味着已发布正式稳定版本。
+The current `channels/stable.json` is an internal development snapshot channel
+and does not mean a formal stable version has been released.
 
-## 本地一键安装
+## Local one-click installation
 
 ```bash
 bash artifacts/install.sh \
@@ -195,165 +280,243 @@ bash artifacts/install.sh \
   --yes
 ```
 
-归档旁边的 `.sha256` 必须保留，也可显式传 `--sha256 HASH`。
-默认询问路径/创建确认；CI 或无人值守使用 `--yes`。默认目录为
-`$HOME/.local/share/semantic`，不覆盖其他用途的非空目录。
+The `.sha256` next to the archive must be kept; you can also explicitly pass
+`--sha256 HASH`.
+By default the installer asks for the path and creation confirmation; use
+`--yes` for CI or unattended runs. The default directory is
+`$HOME/.local/share/semantic`, and non-empty directories used for other purposes
+are not overwritten.
 
-入口需要 bash、Python 3.10+，在线管道还需要 curl；请先由系统包管理器准备。
-缺少系统依赖时会报清单。允许安装器调用系统包管理器/sudo 时，加 `--install-system-deps`。
-启用该选项后，安装器先检查 sudo 授权，再进入动态进度面板。需要密码时通过
-`/dev/tty` 显示授权表单，由 sudo 直接读取当前 Linux 用户密码（不回显、不写日志），
-支持 `curl | bash`。root 或已有有效授权会自动跳过提示。授权限时 180 秒。
-后续命令使用 `sudo -n`，不再隐藏等待密码；授权过期会明确失败，可先运行 `sudo -v` 后重试。
-`--yes` 仅跳过安装确认，不代替 sudo 授权；无人值守需预先配置可用权限或由管理员预装依赖。
-日志在等待授权及每条依赖命令执行前即写入，进度面板显示当前命令和耗时。
-支持 apt-get、dnf（或 yum）、pacman、zypper，根据发行版 ID/ID_LIKE 选择。
-安装的是证书、zstd、C++/OpenMP 运行库和 EGL/Mesa；静态应用不再要求系统 yaml-cpp、
-libuv、OpenSSL。默认渲染后端为 EGL，不把 OSMesa 作为强制依赖。
-不传该选项就不会执行系统安装；不会改写镜像源、关闭签名验证或自动执行全系统升级。
-Arch 请先由管理员保持系统更新；脚本使用 `pacman -S --needed`，不执行 `-Sy` 或 `-Syu`。
-未知发行版允许管理员手动满足依赖，但拒绝猜测包管理器后自动修改系统。
+The entry point needs bash and Python 3.10+, and the online pipe also needs
+curl; prepare them with the system package manager first.
+Missing system dependencies are reported as a list. To allow the installer to
+call the system package manager/sudo, add `--install-system-deps`.
+With this option enabled, the installer first checks the sudo authorization and
+then enters the dynamic progress panel. When a password is needed, an
+authorization form is shown via `/dev/tty` and sudo reads the current Linux
+user's password directly (no echo, nothing written to logs), supporting
+`curl | bash`. Root or an existing valid authorization skips the prompt
+automatically. The authorization is valid for 180 seconds.
+Subsequent commands use `sudo -n` and no longer wait hidden for a password; an
+expired authorization fails explicitly — run `sudo -v` first and retry.
+`--yes` only skips the installation confirmation and does not replace the sudo
+authorization; unattended runs need pre-configured working privileges or
+dependencies pre-installed by an administrator.
+Logs are written while waiting for authorization and before each dependency
+command runs; the progress panel shows the current command and its duration.
+apt-get, dnf (or yum), pacman and zypper are supported, selected by the
+distribution's ID/ID_LIKE.
+What gets installed is certificates, zstd, the C++/OpenMP runtime libraries and
+EGL/Mesa; the static applications no longer require system yaml-cpp, libuv or
+OpenSSL. The default rendering backend is EGL, and OSMesa is not a mandatory
+dependency.
+Without this option no system installation is performed; the installer does not
+rewrite mirror sources, disable signature verification or automatically run a
+full-system upgrade.
+On Arch, the administrator should keep the system updated first; the script uses
+`pacman -S --needed` and never runs `-Sy` or `-Syu`.
+On unknown distributions the administrator may satisfy the dependencies
+manually, but the installer refuses to guess a package manager and modify the
+system automatically.
 
-可以用 `--http-port`、`--ws-port`、`--web-port`、`--runtime-port` 避开现有服务。
-新安装默认依次为 8034、8035、3000、8036；已有实例保留配置的 HTTP 端口。安装器不自动停止其他进程来腾出端口。
-`--no-start` 只初始化而不启动 Server/Web；Runtime 安装仍执行隔离场景 smoke。
+You can use `--http-port`, `--ws-port`, `--web-port` and `--runtime-port` to
+avoid existing services.
+Fresh installs default to 8034, 8035, 3000 and 8036 respectively; existing
+instances keep their configured HTTP port. The installer does not automatically
+stop other processes to free ports.
+`--no-start` only initializes without starting Server/Web; the Runtime
+installation still runs the isolated-scene smoke test.
 
-## HTTPS 一键入口
+## HTTPS one-click entry point
 
-把 `install.sh`、`channels/`、`releases/` 按上述相对结构放到自己的可信 HTTPS
-静态站点（例如内部对象存储或下载站），然后：
+Place `install.sh`, `channels/` and `releases/` on your own trusted HTTPS static
+site (for example internal object storage or a download site) in the relative
+structure described above, then:
 
 ```bash
 curl -fsSL https://YOUR-HOST/semantic/install.sh | \
   bash -s -- --base-url https://YOUR-HOST/semantic --yes
 ```
 
-固定版本加 `--version 0.5.0-dev.20260910.3`；也可提前设置
-`SEMANTIC_DOWNLOAD_BASE`，省略 `--base-url`。`YOUR-HOST` 是通用托管示例；默认地址已配置为
-阿里云 OSS，公开访问及可选私有票据流程见 [OSS.zh-CN.md](OSS.zh-CN.md)。本地 HTTP 测试需显式 `--allow-http`，默认拒绝 HTTP
-及 HTTPS 降级重定向。服务器需要按普通文件返回制品，当前入口不处理 代码托管平台登录页。
+To pin a version add `--version 0.5.0-dev.20260910.3`; you can also set
+`SEMANTIC_DOWNLOAD_BASE` in advance and omit `--base-url`. `YOUR-HOST` is a
+generic hosting example; the default address is already configured to
+Alibaba Cloud OSS — for public access and the optional private-ticket flow, see
+[OSS.md](OSS.md). Local HTTP testing requires an explicit `--allow-http`; HTTP
+and HTTPS-downgrade redirects are rejected by default. The server must return
+the artifacts as plain files; the current entry point does not handle code-hosting
+platform login pages.
 
-引导阶段先校验归档 SHA256，拒绝越界路径、符号链接、特殊文件和超大归档，
-解包后再执行安装逻辑。安装逻辑还验证逐文件清单。
-SHA256 防止损坏，不替代签名：HTTPS 站点和引导脚本必须可信。高信任环境可先下载、
-审阅入口，再用独立可信渠道获取的 `--sha256` 固定制品。
+The bootstrap stage first verifies the archive SHA256, rejects out-of-bounds
+paths, symlinks, special files and oversized archives, and only runs the
+installation logic after unpacking. The installation logic also verifies the
+per-file manifest.
+SHA256 protects against corruption but does not replace signing: the HTTPS site
+and the bootstrap script must be trustworthy. High-trust environments can
+download first, review the entry point, and then pin the artifacts with a
+`--sha256` obtained through an independent trusted channel.
 
-## 安装与初始化结果
+## Installation and initialization result
 
 ```text
 <install-dir>/
-├── releases/<version>/   不与源码工作区混用的产物与重建 Python 环境
+├── releases/<version>/   artifacts not mixed with the source workspace, and rebuilt Python environments
 ├── current -> releases/<version>
-├── bin/semanticctl       本实例管理入口
-├── configs/             初始化的 Server、Agent、Skill 配置及 secrets.json
-├── data/                新数据库（不复制原实例数据）
-├── runtimes.d/          CLI 验证通过后登记的 Native MuJoCo
-├── runtime-packs/       解包后的正式 Runtime Pack
-├── runtime-envs/        目标机独立 MuJoCo venv
-├── content/             场景目录
-├── python/              uv 按需下载的 Python
-├── run/                 PID 身份与安装锁
-└── logs/                每次安装和 Server/Web 日志
+├── bin/semanticctl       management entry point of this instance
+├── configs/             initialized Server, Agent and Skill configs plus secrets.json
+├── data/                new database (no data copied from the original instance)
+├── runtimes.d/          Native MuJoCo registered after CLI verification
+├── runtime-packs/       unpacked official Runtime Pack
+├── runtime-envs/        target-machine standalone MuJoCo venv
+├── content/             scene directory
+├── python/              Python downloaded on demand by uv
+├── run/                 PID identity and installation lock
+└── logs/                logs of every installation and of Server/Web
 ```
 
-流程：SHA256 → 平台/依赖检查 → 提取到安装目录 → Robot venv 重建/导入检查 →
-`semantic init` → 随机管理员密码 → 正式 Runtime Pack 安装与 smoke →
-Server/Web 健康检查 → 登录并发布三个 Robot Skill。
+Flow: SHA256 → platform/dependency checks → extract to the install directory →
+Robot venv rebuild/import checks → `semantic init` → random admin password →
+official Runtime Pack installation and smoke test →
+Server/Web health checks → log in and release the three Robot Skills.
 
-新安装 Web 默认监听全部 IPv4 网卡：访问 `http://127.0.0.1:3000` 或 `http://局域网IP:3000`。公网访问建议 SSH 隧道或
-管理员配置的 HTTPS 反向代理；不默认向公网暴露。模型仍为 mock，真实模型服务和
-Token 需要在 Web 系统设置中配置。不会创建业务 Project、下发 Robot Task 或自动
-运行抓取动作。Runtime 安装的 smoke 是临时仿真场景，结束后由 CLI 清理。
+On a fresh install the Web UI listens on all IPv4 NICs by default: visit
+`http://127.0.0.1:3000` or `http://<LAN-IP>:3000`. For public access, an SSH
+tunnel or an administrator-configured HTTPS reverse proxy is recommended; public
+exposure is not the default. The model is still a mock; the real model service
+and token must be configured in the Web system settings. No business Project is
+created, no Robot Task is dispatched and no grasping motion is run
+automatically. The smoke test of the Runtime installation is a temporary
+simulation scene, cleaned up by the CLI afterwards.
 
-用户名 `admin`；随机密码在 `<install-dir>/configs/secrets.json`（0600），不在
-安装日志中打印，不复用开发默认密码。同版本重跑保留密码、配置和数据库。
+The username is `admin`; the random password is in
+`<install-dir>/configs/secrets.json` (0600), is not printed in the install log,
+and does not reuse the development default password. Re-running the same version
+preserves the password, configuration and database.
 
 ```bash
 "$HOME/.local/share/semantic/bin/semanticctl" status
 "$HOME/.local/share/semantic/bin/semanticctl" start
 "$HOME/.local/share/semantic/bin/semanticctl" doctor
 "$HOME/.local/share/semantic/bin/semanticctl" logs
-# 先在 Studio 停止场景/Robot，再停 Server/Web：
+# Stop the scenes/Robots in Studio first, then stop Server/Web:
 "$HOME/.local/share/semantic/bin/semanticctl" stop
 ```
 
-目前提供本用户后台进程管理，不自动注册 systemd/开机启动。PID 校验包含 Linux
-进程启动时间，不会因 PID 重用误杀其他进程。跨版本升级/数据库迁移暂不自动执行：
-使用新安装目录，经验证后再制定数据迁移方案。同版本未完成安装可重新执行；日志
-保留失败原因，不进行破坏性数据库重置。
+At present, per-user background process management is provided; systemd/boot
+autostart is not registered automatically. PID verification includes the Linux
+process start time, so PID reuse cannot cause other processes to be killed by
+mistake. Cross-version upgrades/database migrations are not performed
+automatically for now: use a new installation directory and design a data
+migration plan after verification. An unfinished installation of the same
+version can be re-run; the logs preserve the failure reason, and no destructive
+database reset is performed.
 
-## 卸载
+## Uninstall
 
-使用新版 `install.sh`，不需要下载或指定发布包；旧版 `.2/.3` 托管实例也可使用。
-`.11` 起也可使用 `semanticctl uninstall`（支持 `--dry-run`、`--yes`、`--purge`）。
-旧管理工具没有此子命令时，直接用最新版 `install.sh --uninstall`（也接受 `uninstall` 子命令），
-无需先更新业务包或启动服务。
+Use the new `install.sh`; no release package needs to be downloaded or
+specified. Old hosted `.2/.3` instances are also supported.
+Since `.11`, `semanticctl uninstall` is also available (supporting `--dry-run`,
+`--yes`, `--purge`).
+When the old management tooling lacks this subcommand, use the latest
+`install.sh --uninstall` directly (it also accepts the `uninstall` subcommand),
+without updating the business packages or starting services first.
 
 ```bash
-# 只检查目录、进程并显示计划，不停止或删除；仍生成审计日志
+# Only check directories and processes and show the plan; nothing is stopped or deleted; an audit log is still generated
 bash artifacts/install.sh --uninstall --dir "$HOME/.local/share/semantic" --dry-run
 
-# 默认保留用户配置、数据库和日志；交互确认后停止 Server/Web 并卸载程序
+# By default user configuration, database and logs are preserved; after interactive confirmation, Server/Web are stopped and the programs uninstalled
 bash artifacts/install.sh --uninstall --dir "$HOME/.local/share/semantic"
 
-# 永久删除整个实例，包括所有用户数据；非交互场景需同时显式传 --yes
+# Permanently delete the entire instance including all user data; non-interactive scenarios must also explicitly pass --yes
 bash artifacts/install.sh --uninstall --dir "$HOME/.local/share/semantic" --purge --yes
 
-# 在线入口也可卸载，下载的只有入口脚本，不再下载几百 MB 制品
+# The online entry point can also uninstall; only the entry script is downloaded, not the several-hundred-MB artifacts
 curl -fsSL https://semantic.insightos.cn/install.sh | \
   bash -s -- --uninstall --dir "$HOME/.local/share/semantic" --yes
 ```
 
-默认删除 `releases/`、`python/`、`runtime-envs/`、`runtime-packs/`、`bin/` 和 `current`
-链接。保留 `configs/`、`data/`、`logs/`、`content/`、`runtimes.d/`、Robot 实例数据及其他
-非程序目录，安装状态标记为未就绪。**保留数据模式不是备份**；重要数据请另行备份。
-使用原版本制品、原路径和原端口重新安装可以重建运行环境并保留密码；跨版本迁移规则不变。
+By default, `releases/`, `python/`, `runtime-envs/`, `runtime-packs/`, `bin/`
+and the `current` symlink are deleted. `configs/`, `data/`, `logs/`,
+`content/`, `runtimes.d/`, Robot instance data and other non-program directories
+are preserved, and the installation state is marked as not ready. **The
+data-preserving mode is not a backup**; back up important data separately.
+Reinstalling with the original version artifacts, the original path and the
+original ports rebuilds the runtime environment and preserves the password; the
+cross-version migration rules are unchanged.
 
-卸载前请先在 Studio 安全停止场景和 Robot。卸载器检查本机可读的进程参数、程序路径和
-工作目录；若发现该实例仍有 Robot/Runtime 等进程，会拒绝继续，不自动终止它们。
-状态表明确显示 Server/Web 已停止或运行，以及其他占用进程，不再以 `{}` 代替状态。
-若是 Bash 等终端仍停留在实例的真实目录，提示对应 PID、进程名、工作目录及 `cd ~`，
-不要用 kill 代替切换目录。对于已删除工作目录（inode 链接数为 0），不再误判为实例占用，
-也不会关闭该终端；仅名称以 ` (deleted)` 结尾的真实目录仍会受到保护。
-仅对 PID、启动时间、实例内程序路径均匹配的 Server/Web 发送 SIGTERM；20 秒未退出
-即中止，不强制杀进程。此检查不代替远程设备/远程 Runtime 的人工安全停机。
+Before uninstalling, safely stop the scenes and Robots in Studio first. The
+uninstaller checks locally readable process arguments, program paths and working
+directories; if it finds that the instance still has Robot/Runtime or other
+processes, it refuses to continue and does not terminate them automatically.
+The status table clearly shows whether Server/Web are stopped or running, along
+with other occupying processes, instead of showing `{}` as the state.
+If a terminal such as Bash is still sitting in the instance's real directory, it
+reports the PID, process name, working directory and suggests `cd ~`; do not use
+kill as a substitute for changing directories. Directories whose working
+directory has been deleted (inode link count 0) are no longer misidentified as
+instance occupation, and that terminal is not closed either; only real
+directories whose names end in ` (deleted)` remain protected.
+SIGTERM is sent only to Server/Web processes whose PID, start time and in-instance
+program path all match; if they have not exited within 20 seconds the operation
+aborts without force-killing. This check does not replace a manual safe shutdown
+of remote devices/remote Runtimes.
 
-目录必须含 `.semantic-install-root` 和有效 `install.json`，由安装时的同一用户操作。
-拒绝主目录、当前工作目录及其父目录、符号链接根目录、异常管理路径及目录内挂载点。
-不要在实例目录内部执行卸载。删除内部符号链接不追随到外部；不卸载系统共享软件包，
-不清理实例外部资源。`--purge` 删除不可由本脚本恢复。
+The directory must contain `.semantic-install-root` and a valid `install.json`,
+and the operation must be performed by the same user who installed it.
+Home directories, the current working directory and its parents, symlinked root
+directories, abnormal management paths and mount points inside the directory are
+rejected. Do not run the uninstall from inside the instance directory. Deleting
+internal symlinks does not follow them to the outside; system shared packages
+are not uninstalled and resources outside the instance are not cleaned up. What
+`--purge` deletes cannot be recovered by this script.
 
-每次卸载（包括失败与 dry-run）会在系统临时目录生成 `semantic-uninstall-*.log`，
-权限 0600，并显示路径；日志位于实例外，purge 不会删掉它。需要长期留存时请另行保存。
-终端显示简明失败原因，完整 traceback 只写入日志。
-卸载实现内嵌于入口，单元测试校验它与 `runtime/uninstall.py` 一致，避免维护时不同步。
+Every uninstall (including failures and dry-runs) generates a
+`semantic-uninstall-*.log` in the system temporary directory with 0600
+permissions, and the path is shown; the log lives outside the instance, so a
+purge does not remove it. Save it elsewhere if you need long-term retention.
+The terminal shows a concise failure reason; the full traceback is written only
+to the log.
+The uninstall implementation is embedded in the entry point, and unit tests
+verify that it matches `runtime/uninstall.py`, so the two do not drift apart
+during maintenance.
 
-## 网络和分发边界
+## Network and distribution boundaries
 
-- 安装包包含应用二进制及 Python Wheel，不包含操作系统和独立 Python 解释器。
-  目标机缺少 Python 3.13 / 3.10.19 时，uv 仍需要网络下载；系统包安装同样需要网络。
-  因此这不是完全离线的 OS 安装介质。
-- 资产清单存在 `distribution_status: internal-only` 和 `license: pending`。
-  生成物明确标记为内部部署快照；公开发布前必须审查源码、第三方 Wheel、模型及
-  网格的再分发许可，不能因为有 curl 安装入口就默认公开上传。
-- `releases/`、`channels/` 和测试暂存目录被 Git 忽略，避免几百 MB 的制品进入源码
-  提交。发布包应存放在制品仓库；当前脚本只在本机生成，不自动上传。
+- The installation package contains application binaries and Python Wheels, but
+  not the operating system or a standalone Python interpreter.
+  When the target machine lacks Python 3.13 / 3.10.19, uv still needs network
+  access to download it; system package installation likewise needs the network.
+  Therefore this is not a fully offline OS installation medium.
+- The asset manifest contains `distribution_status: internal-only` and
+  `license: pending`.
+  The generated artifacts are explicitly marked as internal deployment
+  snapshots; before any public release, the redistribution licenses of the
+  source code, third-party Wheels, models and meshes must be reviewed — do not
+  upload publicly by default just because there is a curl installation entry.
+- `releases/`, `channels/` and the test staging directories are ignored by Git,
+  so that several-hundred-MB artifacts do not enter source commits. Release
+  packages should be stored in an artifact repository; the current scripts only
+  generate them locally and do not upload automatically.
 
-## 测试
+## Testing
 
 ```bash
 python -B -m unittest discover -s tests -q
 go test artifacts/gateway/main.go artifacts/gateway/main_test.go
 bash -n artifacts/install.sh
-# 实际安装测试：独立目录与 28180～28183 端口，最后停止测试实例
+# Real installation test: separate directory and ports 28180-28183; the test instance is stopped at the end
 python -B artifacts/smoke_release.py \
   --package artifacts/releases/0.5.0-dev.20260910.3/linux-x86_64/semantic-0.5.0-dev.20260910.3-linux-x86_64.tar.gz \
   --port-base 28180
 ```
 
-集成验证应使用全新目录和独立端口；除安装成功外，检查登录、Web 同源代理、
-Runtime/场景登记、三个 Skill 精确版本及重跑保留密码。Robot 真正就绪、物理抓取
-和任务执行仍需单独的产品验收，不能由“安装完成”替代。
+Integration verification should use a fresh directory and independent ports;
+besides a successful installation, check login, the Web same-origin proxy,
+Runtime/scene registration, the exact versions of the three Skills and password
+preservation on re-run. Robots being truly ready, physical grasping and task
+execution still require separate product acceptance and cannot be replaced by
+"installation complete".
 
 ## English installer
 
@@ -376,8 +539,11 @@ Regenerate after changing the canonical installer or its runtime modules:
 Translations live in `artifacts/installer.en.json`; do not edit generated
 `install-en.sh` directly. See [site deployment](site/README.md) for publishing.
 
-## 构建复现总入口
+## Master entry point for build reproduction
 
-[三平台构建指南](../README.build.md)列出 glibc、musl、macOS 的实际脚本、完整指令、固定版本和所有组件/依赖仓库入口。
+The [three-platform build guide](../README.build.md) lists the actual scripts,
+complete instructions, pinned versions and all component/dependency repository
+entry points for glibc, musl and macOS.
 
-组件 YAML 导出、`-f` 安装和本地 reconfigure 见 [中文说明](../README.zh-CN.md#组件端口-yaml-与重新配置)。
+For component YAML export, `-f` installation and local reconfigure, see the
+[English README](../README.md#component-yaml-and-reconfiguration).
