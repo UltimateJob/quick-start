@@ -1,33 +1,42 @@
-# 可选 musl Mesa EGL 运行环境
+# Optional musl Mesa EGL runtime
 
-原安装器设置 `MUJOCO_GL=egl`，使用宿主系统的 EGL。系统可以通过 Mesa
-驱动 Intel/AMD，也可以通过 NVIDIA 的厂商实现提供 EGL；EGL 不等于 Mesa。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-这里提供独立的 musl Mesa 构建和 Python 启动入口，并接入安装器的显式 `--musl` 选项。
-默认安装路径仍保持 glibc；Release 组装与验证见 [可选 musl 安装包](../musl/README.md)。
+The original installer sets `MUJOCO_GL=egl` and uses the host system's EGL. A
+system can provide EGL through Mesa drivers for Intel/AMD, or through NVIDIA's
+vendor implementation; EGL is not the same thing as Mesa.
 
-## 驱动与运行时
+This directory provides a standalone musl Mesa build and a Python launch entry
+point, wired into the installer's explicit `--musl` option. The default install
+path remains glibc; see [Optional musl package](../musl/README.md) for Release
+assembly and verification.
 
-默认构建 Mesa 25.2.7，启用 `llvmpipe,iris,crocus,radeonsi,nouveau`：
+## Drivers and runtime
 
-| 显卡/用途 | Mesa 驱动 | 条件 |
+By default Mesa 25.2.7 is built with `llvmpipe,iris,crocus,radeonsi,nouveau`
+enabled:
+
+| GPU / use case | Mesa driver | Requirements |
 | --- | --- | --- |
-| CPU 软件渲染 | llvmpipe | musl LLVM 等运行库 |
-| Intel | iris / crocus | 型号受支持，宿主内核驱动、固件、DRM 设备权限可用 |
-| AMD | radeonsi | 型号受支持，宿主 amdgpu/radeon 驱动、固件、DRM 设备权限可用 |
-| NVIDIA 开源路径 | nouveau | 宿主使用 Nouveau；型号、固件与性能需单独验证 |
-| NVIDIA 官方驱动 | 系统 EGL，使用 glibc Python | 不属于本 musl Mesa 构建；不能直接加载 glibc 用户态驱动到 musl 进程 |
+| CPU software rendering | llvmpipe | musl LLVM and other runtime libraries |
+| Intel | iris / crocus | Supported model; host kernel driver, firmware, and DRM device permissions available |
+| AMD | radeonsi | Supported model; host amdgpu/radeon driver, firmware, and DRM device permissions available |
+| NVIDIA open-source path | nouveau | Host uses Nouveau; model, firmware, and performance must be validated separately |
+| NVIDIA proprietary driver | System EGL with glibc Python | Not part of this musl Mesa build; glibc user-space drivers cannot be loaded directly into a musl process |
 
-Mesa 根据实际设备匹配驱动，不按照品牌强制指定 `GALLIUM_DRIVER`。
-Nouveau 不能接管正由 NVIDIA 官方内核驱动使用的设备；本工具不会安装或替换内核驱动。
-本组件提供 OpenGL/EGL 渲染，不包含 Vulkan、CUDA、OpenCL 或 GPU 物理计算后端。
+Mesa matches drivers to the actual device; `GALLIUM_DRIVER` is not forced by
+brand. Nouveau cannot take over a device in use by the NVIDIA proprietary
+kernel driver; this tool does not install or replace kernel drivers. This
+component provides OpenGL/EGL rendering only; it does not include Vulkan, CUDA,
+OpenCL, or GPU physics compute backends.
 
-## 构建
+## Build
 
-下载 [Mesa 官方 25.2.7 源码](https://archive.mesa3d.org/mesa-25.2.7.tar.xz)，
-校验 SHA-256 为
-`b40232a642011820211aab5a9cdf754e106b0bce15044bc4496b0ac9615892ad`，
-然后解压到工作目录的 `mesa-25.2.7/`。以下命令从该工作目录执行：
+Download the [official Mesa 25.2.7 source](https://archive.mesa3d.org/mesa-25.2.7.tar.xz),
+verify the SHA-256 checksum
+`b40232a642011820211aab5a9cdf754e106b0bce15044bc4496b0ac9615892ad`,
+then extract it to `mesa-25.2.7/` under the working directory. Run the
+following commands from that working directory:
 
 ```sh
 docker build -t insightos-mesa-musl:25.2.7 /path/to/quick-start/artifacts/mesa
@@ -37,26 +46,33 @@ docker run --rm --network=none --cpus=6 --memory=14g \
   insightos-mesa-musl:25.2.7
 ```
 
-`output` 必须不存在。默认使用 3 个编译/测试进程；可以设置 `MESA_JOBS`。
-`MESA_DRIVERS` 可显式选择构建的驱动列表，建议始终保留 llvmpipe。
-输出包括 `prefix/` 和配置、编译、上游测试日志。
-基础镜像固定 digest，APK 包使用 Alpine 配置的源；APK 版本并非全部锁定，
-因此需保留实际版本清单，不宣称逐字节可复现。
+`output` must not exist. Three compile/test jobs are used by default; set
+`MESA_JOBS` to change this. `MESA_DRIVERS` explicitly selects the driver list
+to build; llvmpipe should always be kept. The output includes `prefix/` plus
+configure, compile, and upstream test logs. The base image is pinned by digest
+and APK packages use the Alpine-configured mirrors; APK versions are not all
+locked, so the actual version manifest must be retained and byte-for-byte
+reproducibility is not claimed.
 
-prefix 仍依赖 LLVM、libdrm、libelf 等动态库。可以在同一个构建环境中执行：
+The prefix still depends on dynamic libraries such as LLVM, libdrm, and libelf.
+Run in the same build environment:
 
 ```sh
 python collect-runtime.py /work/output/prefix /work/output/runtime
 ```
 
-该脚本检查 ELF 的 GLIBC 符号依赖并收集外部 musl 库，用于本地离线验证。
-发布流程使用 [锁定的依赖 Release](../musl/releases.json) 及其许可证、源码对应关系和发布清单；此收集工具保留用于本地实验。
-静态 ELF 依赖审计不能代替硬件驱动实际加载与渲染验证。
+This script checks ELF GLIBC symbol dependencies and collects external musl
+libraries for local offline verification. The release process uses the
+[locked dependency Release](../musl/releases.json) with its licenses, source
+correspondence, and release manifest; this collection tool is kept for local
+experiments. A static ELF dependency audit cannot replace actually loading
+hardware drivers and verifying rendering.
 
-## 选择后端并启动
+## Selecting a backend and launching
 
-用**目标应用自身的 Python** 执行 `launch.py`，确保探测与应用使用相同解释器。
-必须事先安装该解释器对应的 MuJoCo、NumPy、PyOpenGL 等依赖。
+Run `launch.py` with the **target application's own Python** so that probing
+and the application use the same interpreter. The corresponding MuJoCo, NumPy,
+PyOpenGL, and other dependencies must be installed for that interpreter first.
 
 ```sh
 /path/to/musl/python artifacts/mesa/launch.py \
@@ -69,57 +85,75 @@ python collect-runtime.py /work/output/prefix /work/output/runtime
   --report /path/to/render-report.json -- -m your_runtime_module
 ```
 
-`--` 后是 Python 参数，不要再写一次 Python 可执行文件。
+Everything after `--` is Python arguments; do not write the Python executable
+again.
 
-| profile | 行为 |
+| profile | Behavior |
 | --- | --- |
-| `auto` | musl：遍历 Mesa EGL 设备，优先成功的硬件渲染，失败后用 llvmpipe；glibc：使用系统 EGL |
-| `mesa-gpu` | 要求 musl Mesa 硬件渲染成功，否则报错，不接受软件渲染冒充 GPU |
-| `software` | 使用 musl Mesa llvmpipe |
-| `system` | 使用系统 EGL 和用户已有厂商配置，报告实际软/硬件渲染结果 |
+| `auto` | musl: iterates Mesa EGL devices, preferring the first successful hardware rendering, falling back to llvmpipe on failure; glibc: uses the system EGL |
+| `mesa-gpu` | Requires musl Mesa hardware rendering to succeed; errors out otherwise — software rendering is not accepted as a stand-in for a GPU |
+| `software` | Uses musl Mesa llvmpipe |
+| `system` | Uses the system EGL and the user's existing vendor configuration, reporting the actual software/hardware rendering result |
 
-多显卡可以用 `--device N` 指定 **EGL 枚举索引**，它不等于 CUDA 索引或 PCI 地址。
-指定设备时不会自动回退到另一设备或软件渲染；不与 `software` 同用。
-`system` 模式保留宿主厂商库配置；bundled Mesa 模式清除冲突的驱动覆盖变量。
-库搜索顺序为 Mesa prefix、应用已有 `LD_LIBRARY_PATH`、Mesa 收集的外部依赖，
-以保留应用已固定的 zlib 等共享库版本。
-配置应在应用启动前选定，切换时重启进程，不能在已经导入 MuJoCo 的进程中切换。
+With multiple GPUs, use `--device N` to specify the **EGL enumeration index**,
+which is not the same as a CUDA index or PCI address. When a device is
+specified there is no automatic fallback to another device or to software
+rendering; do not combine with `software`. `system` mode preserves the host
+vendor library configuration; bundled Mesa mode clears conflicting driver
+override variables. The library search order is Mesa prefix, the application's
+existing `LD_LIBRARY_PATH`, then the Mesa-collected external dependencies, so
+that shared library versions already pinned by the application (such as zlib)
+are preserved. The configuration should be chosen before the application
+starts; restart the process to switch — it cannot be switched in a process that
+has already imported MuJoCo.
 
-每个候选设备在独立子进程中完成 RGB/深度渲染，记录 OpenGL vendor、renderer、
-version、实际库路径与失败原因。单次探测超时为 30 秒。输出的 `software` 字段
-表示检测到了 llvmpipe/softpipe 等软件渲染器，不用 `MUJOCO_GL=egl` 推断硬件加速。
+Each candidate device completes RGB/depth rendering in an independent
+subprocess, recording the OpenGL vendor, renderer, version, actual library
+paths, and failure reasons. A single probe times out after 30 seconds. The
+`software` field in the output indicates that a software renderer such as
+llvmpipe/softpipe was detected; hardware acceleration is not inferred from
+`MUJOCO_GL=egl`.
 
-在容器中测试 AMD/Intel 时，需要额外传入可访问的 `/dev/dri` 设备；
-无设备的容器用于验证软件回退。普通用户还需宿主机对应的 render/video 组权限。
+When testing AMD/Intel in a container, additionally pass through an accessible
+`/dev/dri` device; a container without the device is used to verify software
+fallback. Regular users also need the corresponding render/video group
+permissions on the host.
 
-## 本地验证（2026-09-11）
+## Local verification (2026-09-11)
 
-| 检查 | 结果 |
+| Check | Result |
 | --- | --- |
-| 五个 Gallium 驱动的源码构建 | 成功；Mesa 上游测试 72 passed，0 failed |
-| 后端选择与依赖优先级测试 | 9 passed |
-| Mesa 动态依赖审计 | 18 个 ELF 无 GLIBC 符号版本要求；收集 13 个外部 musl 库 |
-| AMD 实机无头渲染 | Ryzen 9 9950X 核显，radeonsi，OpenGL 4.6；RGB/深度/物理检查通过 |
-| 无 GPU 自动回退 | llvmpipe，OpenGL 4.5；RGB/深度/物理检查通过 |
-| 单一 Python 联合测试 | 两种渲染模式均通过 MuJoCo 3.4.0、Pinocchio 3.9.0、Coal 3.0.2、Ruckig 0.19.4 联合检查 |
+| Source build of all five Gallium drivers | Succeeded; Mesa upstream tests 72 passed, 0 failed |
+| Backend selection and dependency priority tests | 9 passed |
+| Mesa dynamic dependency audit | 18 ELFs with no GLIBC symbol version requirements; 13 external musl libraries collected |
+| AMD real-machine headless rendering | Ryzen 9 9950X iGPU, radeonsi, OpenGL 4.6; RGB/depth/physics checks passed |
+| Automatic fallback without GPU | llvmpipe, OpenGL 4.5; RGB/depth/physics checks passed |
+| Single-Python joint test | Both rendering modes passed the joint MuJoCo 3.4.0, Pinocchio 3.9.0, Coal 3.0.2, Ruckig 0.19.4 checks |
 
-联合测试使用断网的全新 Python 3.13 Alpine 容器，NumPy 2.3.5；没有挂载宿主机图形库，
-AMD 测试只透传相应 DRM 设备。检查实际加载的 Mesa 路径，并确保 Assimp、Qhull、
-TinyXML2、zlib 从项目已发布的 Release 目录加载。
-Intel 和 Nouveau 目前只有源码构建与上游测试结果，**尚未实机验证**。
-NVIDIA 官方 EGL 路径没有通过本轮验证，也没有变成 musl 兼容路径。
+The joint test used a fresh, network-disconnected Python 3.13 Alpine container
+with NumPy 2.3.5; no host graphics libraries were mounted, and the AMD test
+only passed through the corresponding DRM device. The actually loaded Mesa
+paths were checked, and Assimp, Qhull, TinyXML2, and zlib were verified to load
+from the project's published Release directory. Intel and Nouveau currently
+only have source-build and upstream test results — **not yet verified on real
+hardware**. The NVIDIA proprietary EGL path was not covered by this round of
+verification and has not become a musl-compatible path.
 
-本地完整源码构建使用已有 MuJoCo musl 工具链补充 Intel 编译依赖；本目录的
-独立 Dockerfile 已完成镜像构建与同配置 Meson 配置检查。
-Mesa prefix 约 47 MiB，收集的外部依赖约 177 MiB，仍为动态链接。
-首次联合测试发现 Mesa 的 zlib 覆盖应用已固定版本；调整加载顺序后两种模式均复测通过。
-这些组件测试不代表完整 installer、所有业务场景或显卡性能已完成验收。
+The full local source build reused the existing MuJoCo musl toolchain to
+supply Intel compile dependencies; the standalone Dockerfile in this directory
+has completed image build and a Meson configuration check with the same
+configuration. The Mesa prefix is about 47 MiB and the collected external
+dependencies about 177 MiB, still dynamically linked. The first joint test
+found Mesa's zlib overriding the version pinned by the application; after
+adjusting the load order both modes passed re-testing. These component tests
+do not mean the full installer, all business scenarios, or GPU performance
+acceptance is complete.
 
-## 参考
+## References
 
-- [Mesa EGL 驱动架构](https://docs.mesa3d.org/egl.html)
-- [Mesa 驱动环境变量](https://docs.mesa3d.org/envvars.html)
-- [NVIDIA 官方驱动系统要求](https://download.nvidia.com/XFree86/Linux-x86_64/580.76.05/README/minimumrequirements.html)
+- [Mesa EGL driver architecture](https://docs.mesa3d.org/egl.html)
+- [Mesa driver environment variables](https://docs.mesa3d.org/envvars.html)
+- [NVIDIA proprietary driver system requirements](https://download.nvidia.com/XFree86/Linux-x86_64/580.76.05/README/minimumrequirements.html)
 
 ## Reproduce from source and Releases
 
