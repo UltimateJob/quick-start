@@ -4,7 +4,7 @@
 
 本文回答一个问题：**预编译安装入口 (`install.sh`) 目前只能装基础环境，扩展场景（LIBERO，以及后续 Isaac）该怎么装。**
 
-配套阅读：[发布 CI](release-ci.zh-CN.md)、[产物发布与一键部署](../artifacts/README.md)。源码编译路径（TUI 阶段 8）见 `semantic-installer-README.zh-CN.md`。
+配套阅读：[发布 CI](release-ci.zh-CN.md)、[产物发布与一键部署](../artifacts/README.zh-CN.md)。源码编译路径（TUI 阶段 8）见 `semantic-installer-README.zh-CN.md`。
 
 ---
 

@@ -99,7 +99,7 @@ bash ./install-en.sh --install-system-deps  # GitHub Releases
 
 两个脚本均可单独复制到其他目录运行，不会再下载额外的安装器代码。可先查看脚本，再用 `bash install.sh --help` 或 `bash install-en.sh --help` 查看参数。无需 Go、Node 或 xmake 构建工具；首次安装会下载独立 Python 环境。`--install-system-deps` 可能需要 sudo，使用用户机器已配置的系统软件源，不改写源配置；英文安装器也保留用户的 uv 配置和包索引。
 
-用 `--dir /绝对路径/实例目录` 安装独立实例。预编译安装的管理员账号为 `admin`，密码随机生成，可用 `~/.local/share/semantic/bin/semanticctl welcome` 查看（自定义 `--dir` 时调整路径）。服务管理使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.md)。
+用 `--dir /绝对路径/实例目录` 安装独立实例。预编译安装的管理员账号为 `admin`，密码随机生成，可用 `~/.local/share/semantic/bin/semanticctl welcome` 查看（自定义 `--dir` 时调整路径）。服务管理使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.zh-CN.md)。
 
 如需从源码构建，使用已验证的公开基线：
 
@@ -219,7 +219,7 @@ python3 -m unittest discover -s tests
 
 该配置用于 `repo_versions.py`，不是安装器参数。对外分发前应准备地址可公开访问、revision 相匹配的清单。详见[仓库配置参考](README.reference.md)与[开源发布检查清单](maintenance/open-source-readiness.md)。
 
-TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托管服务。预编译安装使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.md)。
+TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托管服务。预编译安装使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.zh-CN.md)。
 
 ## 常见问题
 
