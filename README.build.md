@@ -89,7 +89,7 @@ Scripts: [build_from_releases.py](artifacts/build_from_releases.py),
 [fetch_releases.py](artifacts/fetch_releases.py), [smoke_release.py](artifacts/smoke_release.py).
 The older all-source route uses [build_native.py](artifacts/build_native.py) and
 [build_release.py](artifacts/build_release.py) after the source workspace has been
-built; see [artifact build prerequisites](artifacts/README.md#在构建机生成发布包).
+built; see [artifact build prerequisites](artifacts/README.md#building-release-packages-on-the-build-machine).
 
 ## Linux musl x86_64
 
