@@ -40,7 +40,7 @@ class OSSTests(unittest.TestCase):
         path = self.root/'oss.env'
         path.write_text('OSS_REGION=cn-shanghai\nOSS_ENDPOINT=https://oss-cn-shanghai.aliyuncs.com\n'
             'OSS_BUCKET=test-bucket\nOSS_PREFIX=semantic\nOSS_DOWNLOAD_BASE=https://test.example/semantic\n'
-            'OSS_ACCESS_KEY_ID=test-id\nOSS_ACCESS_KEY_SECRET=test-secret\n')
+            'OSS_ACCESS_KEY_ID=<test-key-id>\nOSS_ACCESS_KEY_SECRET=<test-secret>\n')
         path.chmod(0o600)
         return path
 
