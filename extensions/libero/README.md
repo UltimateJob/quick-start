@@ -21,7 +21,7 @@ one path:
 ```text
 ① Base environment   install.sh (no extension) → usable Server + Studio
 ② Install LIBERO     install.sh --extension libero --extension-project <PROJECT-ID>
-③ Web reproduction   scene configuration → add a compatible scene; project content → bind ability and model; device centre → add a Pilot
+③ Web reproduction   scene configuration → add a compatible scene; project content → bind ability and model; device centre → install the Robot Skill (physical hosts also need a join code)
 ④ Acceptance         pick an initial state → start the scene → robot online → dispatch the expected robot skill
 ```
 
@@ -52,7 +52,8 @@ Obtain it yourself under the upstream license (the upstream benchmark
 ```bash
 # put libero-scenes.zip into a local directory and install fully offline from it
 install.sh --extension libero --extension-package-dir <dir>
-# the installer verifies it byte-for-byte against the manifest (sha256/size) — do not use repackaged copies
+# channel artifacts are verified byte-for-byte against the manifest (sha256/size);
+# your own scenes zip is not digest-pinned — the importing command validates its content
 ```
 
 **Model weights (the only other external dependency).** SmolVLA weights come from HuggingFace.
@@ -67,7 +68,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 | Purpose | Default | Decided by |
 |---|---|---|
-| LIBERO runtime | `8092` | manifest `runtime.endpoint` (different from the base environment's native-mujoco `8090`, so both can coexist) |
+| LIBERO runtime | `8092` | manifest `runtime.endpoint` (different from the base environment's native-mujoco `8036`, so both can coexist) |
 | Ability range | `18100–18199` | `ability_port_first` / `ability_port_last` in `semantic-server.yaml` |
 | Server HTTP / WS | `8034` / `8035` | `semantic-server.yaml` |
 | Web front end | `3000` | `semantic-web` |
@@ -78,6 +79,12 @@ export HF_ENDPOINT=https://hf-mirror.com
 ---
 
 ## 2. Install into the framework
+
+> **First time? Create a Project first.** A fresh instance has no Project, and extension components
+> must install into a `mode=development` Project (otherwise the install fails with
+> `无法在 Server 上找到可用 Project`). Sign in to the web Studio as described at the start of
+> section 3, create a Project from **Projects** on the left, copy its project ID, and pass it to
+> `--extension-project`.
 
 Same entry script as the base install; it continues into the extension once the base environment is
 ready:
@@ -96,11 +103,12 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 | `--extension-manifest <file>` | override the manifest source with a local file |
 | `--extension-dry-run` | print the command plan without changing anything |
 
-Preview the plan first:
+Once the base environment is installed, preview the plan first (dry-run prints
+commands only and changes nothing):
 
 ```bash
-curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
-  --extension libero --extension-dry-run
+semanticctl extension install libero --dry-run
+# with an offline directory, validate it too: semanticctl extension install libero --dry-run --extension-package-dir <dir>
 ```
 
 With the base environment already installed, the bundled manager works too:
@@ -120,14 +128,17 @@ semanticctl extension install libero --project <PROJECT-ID>
 
 ## 3. Reproduce in the web Studio
 
-The base install creates the administrator `admin` with a random password, printed by:
+The base install creates the administrator `admin` with a random password stored as
+`SEMANTIC_ADMIN_PASSWORD` in `configs/secrets.json`; `semanticctl welcome` prints the file location:
 
 ```bash
 "$HOME/.local/share/semantic/bin/semanticctl" welcome
 ```
 
 Open the web Studio (default `http://127.0.0.1:3000`), sign in as `admin`, and open the target
-project. The three steps below are all required.
+project. Three steps are required in the web Studio — add a compatible scene, bind the ability and
+model, and install the Robot Skill on the robot — before a scene can run (a physical robot host
+additionally needs the one-time join code in 3.3).
 
 ### 3.1 Scene configuration → add a compatible scene
 
@@ -168,14 +179,31 @@ Pilot stays `offline`, and the device page shows no executable robot.
 3. In the dialog choose, in order, **robot model** `franka_panda` → **ability (one implementation per
    role)** → **policy model** (e.g. SmolVLA, package `franka-smolvla-model`), then click **Save
    binding**;
-4. Back on that robot's card, click **Apply now / retry** — this **stops and restarts that robot's
-   components once** (the scene keeps its current state), so confirm the robot is idle first.
+4. With a robot already present, back on that robot's card click **Apply now / retry** — this **stops
+   and restarts that robot's components once** (the scene keeps its current state), so confirm the
+   robot is idle first. **On a fresh project with no robot yet, skip this step**: the binding takes
+   effect automatically when the robot registers (clicking it now only yields "当前项目中没有该受管
+   Robot").
 
 **Done when**: the card's "pending configuration" and "running model" agree and it no longer sits in
 `Standby`. A project default only applies to **future first-time bindings**; each robot's own choice
 is stored independently.
 
-### 3.3 Device centre → add a Pilot
+### 3.3 Device centre → install the Robot Skill (simulated robots need no join code)
+
+**Simulated robots register with the scene.** For simulation scenes such as LIBERO, the Server brings
+the robot (e.g. `franka-0`) online automatically when the scene starts in 3.4 — **no one-time join
+code is needed**; the join-code flow below is for **physical robot hosts**. Once the simulated robot
+is online there is exactly one thing left to do here, because it does not pick up the Robot Skill by
+itself:
+
+1. After starting the scene (3.4), open **Device centre** and confirm `franka-0` is online with the
+   AbilityFramework ready;
+2. On the `franka-0` device page, install the `vla-manipulation` Skill (the version imported by the
+   extension install);
+3. With the Skill enabled, dispatch the task as in 3.4.
+
+The physical-host onboarding flow follows below.
 
 Open **Device centre** (top menu `Device / Device centre`) and click **Add Pilot**:
 

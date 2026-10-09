@@ -19,7 +19,7 @@ LIBERO 场景装进 Semantic，并在 Web Studio 里把机器人跑起来。按�
 ```text
 ① 基础环境        install.sh（不装扩展）→ 可用的 Server + Studio
 ② 装 LIBERO       install.sh --extension libero --extension-project <项目ID>
-③ Web 复刻         场景配置 → 添加兼容场景；项目内容 → 绑定 Ability 与模型；设备中心 → 添加 Pilot
+③ Web 复刻         场景配置 → 添加兼容场景；项目内容 → 绑定 Ability 与模型；设备中心 → 安装 Robot Skill（实体机另需加入码）
 ④ 验收             选初态 → 启动场景 → 机器人上线 → 下发展望的 Robot Skill
 ```
 
@@ -48,7 +48,7 @@ LIBERO 场景装进 Semantic，并在 Web Studio 里把机器人跑起来。按�
 ```bash
 # 把 libero-scenes.zip 放进本地目录，完全离线安装
 install.sh --extension libero --extension-package-dir <目录>
-# 安装器按清单里的 sha256/size 逐字节校验，不要用改打包的副本
+# 通道产物按清单里的 sha256/size 逐字节校验；自备场景 zip 不锁定摘要，导入时校验内容
 ```
 
 **模型权重（另一项外部依赖）。** SmolVLA 权重从 HuggingFace 取得。**国内直连 huggingface.co
@@ -62,7 +62,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 
 | 用途 | 默认 | 由谁决定 |
 |---|---|---|
-| LIBERO Runtime | `8092` | 清单 `runtime.endpoint`（与基础环境 native-mujoco 的 `8090` 不同，可并存） |
+| LIBERO Runtime | `8092` | 清单 `runtime.endpoint`（与基础环境 native-mujoco 的 `8036` 不同，可并存） |
 | Ability 段 | `18100–18199` | `semantic-server.yaml` 的 `ability_port_first` / `ability_port_last` |
 | Server HTTP / WS | `8034` / `8035` | `semantic-server.yaml` |
 | Web 前端 | `3000` | `semantic-web` |
@@ -73,6 +73,11 @@ export HF_ENDPOINT=https://hf-mirror.com
 ---
 
 ## 2. 安装到框架
+
+> **首次使用先建 Project。** 全新实例里没有任何 Project，而扩展组件必须装进一个
+> `mode=development` 的 Project（否则报 `无法在 Server 上找到可用 Project`）。先按第 3 节
+> 开头登录 Web，在 Studio 左侧「项目」新建一个 Project 并复制项目 ID，再传给
+> `--extension-project`。
 
 同一个入口脚本，基础环境装完后自动继续装扩展：
 
@@ -90,11 +95,11 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 | `--extension-manifest <文件>` | 用本地清单覆盖来源 |
 | `--extension-dry-run` | 只打印命令计划，不改动现场 |
 
-装之前可以先看计划：
+装好基础环境后、正式安装前可以先看计划（dry-run 只打印命令、不改动现场）：
 
 ```bash
-curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
-  --extension libero --extension-dry-run
+semanticctl extension install libero --dry-run
+# 用离线目录时一并校验：semanticctl extension install libero --dry-run --extension-package-dir <目录>
 ```
 
 已经装好基础环境时，也可以直接用内置管理命令：
@@ -113,14 +118,16 @@ semanticctl extension install libero --project <项目ID>
 
 ## 3. 在 Web 上复刻
 
-基础安装的管理员账号是 `admin`，密码随机生成，用 `semanticctl welcome` 查看：
+基础安装的管理员账号是 `admin`，密码随机生成，保存在 `configs/secrets.json` 的
+`SEMANTIC_ADMIN_PASSWORD`；`semanticctl welcome` 会显示该文件位置：
 
 ```bash
 "$HOME/.local/share/semantic/bin/semanticctl" welcome
 ```
 
 浏览器打开 Web（默认 `http://127.0.0.1:3000`），用 `admin` 登录，进入目标 Project。装完有**三件事**
-必须在 Web 上做，缺一件场景就进不了项目、机器人就起不来。
+必须在 Web 上做——添加兼容场景、绑定 Ability 与模型、给机器人安装 Robot Skill——缺一件场景就
+进不了项目、机器人就起不来（实体机器人主机另需一次性加入码接入，见 3.3）。
 
 ### 3.1 场景配置 → 添加兼容场景
 
@@ -158,13 +165,24 @@ semanticctl extension install libero --project <项目ID>
    - **Ability（同一角色选择一个实现）**：勾选该型号要用的 Ability；
    - **策略模型**：选兼容的已安装模型（如 SmolVLA，模型包 `franka-smolvla-model`）；
 4. 点 **保存绑定**；
-5. 回到该机器人的卡片，点 **立即生效 / 重试**——这一步会停止并重启该 Robot 的组件一次
-   （场景保持当前状态），所以先确认机器人空闲。
+5. 已有机器人时回到该机器人的卡片，点 **立即生效 / 重试**——这一步会停止并重启该 Robot 的组件一次
+   （场景保持当前状态），所以先确认机器人空闲。**全新项目里还没有机器人时可跳过本步**，
+   绑定会在机器人注册时自动生效（此时点「立即生效」只会得到"当前项目中没有该受管 Robot"）。
 
 > **不绑定的后果**：Ability 停在 `Standby`（`abilityPort: 0`）直到超时，Pilot 一直 `offline`，
 > 设备页看不到可执行的机器人。项目默认只对**后续首次绑定**生效，单个 Robot 的选择独立保存。
 
-### 3.3 设备中心 → 添加 Pilot
+### 3.3 设备中心 → 安装 Robot Skill（仿真机器人无需加入码）
+
+**仿真机器人随场景自动注册。** LIBERO 这类仿真场景的 Robot（如 `franka-0`）在 3.4 启动场景时由
+Server 自动拉起到线，**不需要一次性加入码**；本节的一次性加入码流程用于接入**实体机器人主机**。
+仿真机器人上线后只有一件事要做：它不会自动装上 Robot Skill，需要在设备页安装：
+
+1. 启动场景（见 3.4）后，顶部菜单进 **设备中心**，确认 `franka-0` 在线、AbilityFramework ready；
+2. 在 `franka-0` 的设备页安装 `vla-manipulation` Skill（安装扩展时导入的版本）；
+3. Skill 启用后即可按 3.4 下发任务。
+
+下面是实体机器人主机的接入流程。
 
 「设备中心」是机器人的全局观察入口。全新环境设备列表为空，要用一次性加入码把机器人加进来。
 注意 **「添加 Pilot」并不直接添加机器人**：它只生成一个一次性加入码，机器人是在**机器人主机**上执行启动

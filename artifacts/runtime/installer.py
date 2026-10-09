@@ -1040,7 +1040,7 @@ def main():
     p.add_argument('--dry-run', action='store_true', help='uninstall: 只显示计划')
     extension.register(commands)
     a = parser.parse_args()
-    handler = getattr(a, 'extension', None)
+    handler = getattr(a, 'extension_handler', None)
     if handler:
         sys.exit(handler(a))
     if a.command == 'control' and a.action not in ('uninstall', 'reconfigure') and (a.yes or a.purge or a.dry_run):
