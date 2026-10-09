@@ -15,6 +15,12 @@
 # limitations under the License.
 
 # Semantic bootstrap. Download, verify and extract before executing release code.
+# The canonical source of this installer is artifacts/install.sh. The
+# repository-root install.sh and both install-en.sh variants are generated
+# copies; do not edit them directly. To change install behavior, edit
+# artifacts/install.sh (outside the BEGIN/END GENERATED blocks),
+# artifacts/runtime/*, or the English catalog artifacts/installer.en.json,
+# then run: python3 artifacts/build_installers.py
 # OSS base: https://insightos-artifacts.oss-cn-shanghai.aliyuncs.com/semantic
 # Private objects require a short-lived ticket from oss_client.py; never embed AccessKeys here.
 set -euo pipefail
