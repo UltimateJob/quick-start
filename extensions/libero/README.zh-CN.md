@@ -271,5 +271,5 @@ LIBERO 是上游第三方 benchmark（`github.com/Lifelong-Robot-Learning/LIBERO
 
 ### 设计依据
 
-清单结构、通道布局与发布流程见 [`../../docs/extensions.md`](../../docs/extensions.md)；
+清单结构、通道布局与发布流程见 [`../../docs/extensions.zh-CN.md`](../../docs/extensions.zh-CN.md)；
 总入口与目录约定见 [`../README.zh-CN.md`](../README.zh-CN.md)。

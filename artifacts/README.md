@@ -19,10 +19,10 @@ bash ./install-en.sh --install-system-deps  # GitHub Releases v0.1.1，英文提
 python3 semantic_installer.py --release --install-system-deps
 ```
 
-默认 `v0.1.1`，支持 `--tag`、`--dir`、`--yes` 等参数。下载组件用于组装时使用 `fetch_releases.py`；CI 使用 `build_from_releases.py`，无需重新编译子仓库。版本、校验与组装说明见 [Release CI](../docs/release-ci.md)。
+默认 `v0.1.1`，支持 `--tag`、`--dir`、`--yes` 等参数。下载组件用于组装时使用 `fetch_releases.py`；CI 使用 `build_from_releases.py`，无需重新编译子仓库。版本、校验与组装说明见 [Release CI](../docs/release-ci.zh-CN.md)。
 
 公开 OSS 与 GitHub Release 安装均无需 OSS 凭据；私有 OSS 对象可使用限时票据。
-向 OSS 发布制品的维护操作见 [OSS.md](OSS.md)。
+向 OSS 发布制品的维护操作见 [OSS.zh-CN.md](OSS.zh-CN.md)。
 
 根目录脚本由安装器源码生成，不单独手改。修改 `artifacts/install.sh`、英文生成器或运行时模块后，运行：
 
@@ -100,7 +100,7 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- --install-syste
 
 当前制品目标：Linux x86_64、glibc >= 2.28，完整 Server + Web + Native MuJoCo +
 R1 Pro Bundle。应用程序采用静态 ELF，glibc 门槛来自 uv/Python/Wheel 运行栈；
-满足门槛不等于所有发行版都已通过产品验收。实测范围见 [PORTABILITY.md](PORTABILITY.md)。
+满足门槛不等于所有发行版都已通过产品验收。实测范围见 [PORTABILITY.zh-CN.md](PORTABILITY.zh-CN.md)。
 以上门槛适用于默认 Linux x86_64 包。另提供 Apple Silicon / macOS 15.5+ 原生预览包，见 [macOS 构建说明](macos/README.md)；Windows 尚未提供安装包。
 
 Linux x86_64 使用额外的 `--musl` 参数可选择 musl 包；默认 glibc 路径不变。`--musl-runtime bundled`（默认）使用随包提供的 musl，可运行于 glibc 或 musl 宿主；`--musl-runtime system` 使用宿主已有的 musl。运行时选择保存在实例中，切换时使用新目录，不修改宿主 `/lib`。中英文脚本与 `python3 semantic_installer.py --release --musl` 均支持。可选包自带 CPython 3.13.15、NumPy 2.3.5、机器人依赖与 Mesa，详见 [musl/README.md](musl/README.md)。GPU 探测和软件回退入口见 [mesa/README.md](mesa/README.md)。
@@ -230,7 +230,7 @@ curl -fsSL https://YOUR-HOST/semantic/install.sh | \
 
 固定版本加 `--version 0.5.0-dev.20260910.3`；也可提前设置
 `SEMANTIC_DOWNLOAD_BASE`，省略 `--base-url`。`YOUR-HOST` 是通用托管示例；默认地址已配置为
-阿里云 OSS，公开访问及可选私有票据流程见 [OSS.md](OSS.md)。本地 HTTP 测试需显式 `--allow-http`，默认拒绝 HTTP
+阿里云 OSS，公开访问及可选私有票据流程见 [OSS.zh-CN.md](OSS.zh-CN.md)。本地 HTTP 测试需显式 `--allow-http`，默认拒绝 HTTP
 及 HTTPS 降级重定向。服务器需要按普通文件返回制品，当前入口不处理 代码托管平台登录页。
 
 引导阶段先校验归档 SHA256，拒绝越界路径、符号链接、特殊文件和超大归档，
