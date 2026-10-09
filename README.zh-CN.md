@@ -99,7 +99,7 @@ bash ./install-en.sh --install-system-deps  # GitHub Releases
 
 两个脚本均可单独复制到其他目录运行，不会再下载额外的安装器代码。可先查看脚本，再用 `bash install.sh --help` 或 `bash install-en.sh --help` 查看参数。无需 Go、Node 或 xmake 构建工具；首次安装会下载独立 Python 环境。`--install-system-deps` 可能需要 sudo，使用用户机器已配置的系统软件源，不改写源配置；英文安装器也保留用户的 uv 配置和包索引。
 
-用 `--dir /绝对路径/实例目录` 安装独立实例。预编译安装的管理员账号为 `admin`，密码随机生成，可用 `~/.local/share/semantic/bin/semanticctl welcome` 查看（自定义 `--dir` 时调整路径）。服务管理使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.md)。
+用 `--dir /绝对路径/实例目录` 安装独立实例。预编译安装的管理员账号为 `admin`，密码随机生成，可用 `~/.local/share/semantic/bin/semanticctl welcome` 查看（自定义 `--dir` 时调整路径）。服务管理使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.zh-CN.md)。
 
 如需从源码构建，使用已验证的公开基线：
 
@@ -152,7 +152,7 @@ curl -fsSL https://semantic.insightos.cn/install.sh | bash -s -- \
 - 端口：BEHAVIOR 用 Runtime `18090`、Ability `18100-18199`、策略服务 `20080`；LIBERO 用 `18100-18199`，同机并存要分配不同端口段。
 - 装完要到 Web「场景配置 → 添加兼容场景」，并把 Ability 与模型绑定到机器人——安装只把场景注册到场景目录。
 
-安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.md)，场景总入口见 [`extensions`](extensions/README.zh-CN.md)，各场景操作手册见 [LIBERO](extensions/libero/README.zh-CN.md) 与 [BEHAVIOR](extensions/isaac/README.zh-CN.md)；源码编译路径见 TUI 阶段 8。
+安装后可用管理命令：`semanticctl extension list|show|verify|install|remove`（可加 `--source oss|github`）。详细设计见[扩展场景设计](docs/extensions.zh-CN.md)，场景总入口见 [`extensions`](extensions/README.zh-CN.md)，各场景操作手册见 [LIBERO](extensions/libero/README.zh-CN.md) 与 [BEHAVIOR](extensions/isaac/README.zh-CN.md)；源码编译路径见 TUI 阶段 8。
 
 ## 🛠 源码构建
 
@@ -219,7 +219,7 @@ python3 -m unittest discover -s tests
 
 该配置用于 `repo_versions.py`，不是安装器参数。对外分发前应准备地址可公开访问、revision 相匹配的清单。详见[仓库配置参考](README.reference.md)与[开源发布检查清单](maintenance/open-source-readiness.md)。
 
-TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托管服务。预编译安装使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.md)。
+TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托管服务。预编译安装使用 `semanticctl start|stop|status|doctor`，详见[安装管理](artifacts/README.zh-CN.md)。
 
 ## 常见问题
 
@@ -230,7 +230,7 @@ TUI 中 `e` 配置、Enter 执行步骤、`L` 查看服务日志、`x` 停止托
 - 步骤失败会停止队列；重跑前查看 `.tui-logs/`。
 - 密码和模型 Key 仅保存在本地，不向不可信网络开放开发服务。
 
-[详细 TUI 指南](semantic-installer-README.md) · [排障笔记](NOTES.md)
+[详细 TUI 指南](semantic-installer-README.zh-CN.md) · [排障笔记](NOTES.md)
 
 ## 许可证
 

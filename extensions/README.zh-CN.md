@@ -147,7 +147,7 @@ extensions/images/<id>/*.png       # 手册里的截图
 怎么在 Web 上验收」。新增场景时照这两份文件的形状补齐即可，安装侧不需要改代码——
 `semanticctl extension` 按 id 读取清单，通道布局与校验纪律对每个场景一致。
 
-> **改字段前先读 [`../docs/extensions.md`](../docs/extensions.md)**：清单约束不是风格偏好，
+> **改字段前先读 [`../docs/extensions.zh-CN.md`](../docs/extensions.zh-CN.md)**：清单约束不是风格偏好，
 > `semanticctl extension verify` 会按它逐字节校验（SHA-256、大小、包内文件集合）。
 > 发布流程（`build_extension.py` / `publish_extension.py`、`repo-versions.json` 的 `extensions` 段、
 > OSS mutable 白名单）也记在该文。
