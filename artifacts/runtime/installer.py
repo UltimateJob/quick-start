@@ -77,6 +77,13 @@ def load(path):
 
 
 def verify_payload(payload):
+    """Verify an extracted release payload against its checksum manifest.
+
+    Every file listed in ``payload/files.json`` must exist and match its
+    SHA-256; symlinks, absolute or parent-relative paths, and unlisted files
+    (except macOS ``.DS_Store`` metadata) are rejected. Returns the parsed
+    ``release.json`` manifest. Raises ``ValueError`` on any mismatch.
+    """
     records = load(payload/'files.json')
     if not isinstance(records, dict) or not records:
         raise ValueError('文件校验清单为空')
@@ -377,6 +384,14 @@ def publish(root, release, state, quiet=False):
 
 
 def start(root, quiet=False):
+    """Start the managed server and web services of an installed instance.
+
+    Prepares the musl runtime, runs the render probe, spawns
+    ``semantic-server`` and ``semantic-web-gateway`` with health checks, and
+    publishes the bundle's Robot Skills. Already-running services are kept;
+    anything started here is stopped again on failure. Raises if the
+    installation is not ``ready``.
+    """
     state = load(root/'install.json')
     if not state.get('ready'):
         raise RuntimeError('安装尚未完成，请先重跑安装')
@@ -614,6 +629,16 @@ def install_extension(root, a):
 
 
 def install(a):
+    """Install a verified payload at the managed root named by ``--dir``.
+
+    ``a`` is the parsed ``install`` CLI namespace. Verifies the payload,
+    enforces platform/port/directory constraints, deploys the release under
+    ``<dir>/releases/<version>``, builds the Robot Python environment,
+    initializes the server configuration on first install, and starts the
+    managed services unless ``--no-start``. An existing installation is
+    repaired in place only for the same version and ports; a different
+    version or implicit port change is refused.
+    """
     global INSTALL_LOG, PROGRESS
     payload = a.payload.resolve()
     manifest = verify_payload(payload)
@@ -898,6 +923,15 @@ def replace_config(path, data):
 
 
 def configure_existing(a):
+    """Reconfigure ports and web host of a completed installation in place.
+
+    Requires a finished install (``ready`` state) and no active instance
+    processes. Writes a timestamped backup under ``configs/``, applies the
+    component updates through atomic file replacement, and restarts the
+    managed services unless ``--no-start``. On failure every touched file is
+    restored and previously running services are started again. The Ability
+    port range cannot change once Robot configurations exist.
+    """
     global INSTALL_LOG
     from uninstall import uninstall_root, uninstall_managed, uninstall_processes
     root, state = uninstall_root(a.dir)
@@ -978,6 +1012,7 @@ def configure_existing(a):
 
 
 def main():
+    """CLI entry point: define the install/configure/export-config/control/extension subcommands and dispatch to their handlers."""
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)

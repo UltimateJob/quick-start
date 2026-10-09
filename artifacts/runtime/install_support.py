@@ -124,11 +124,17 @@ class Console:
 
 
 def settings_form(title, rows, stream=None):
+    """Render a titled label/value form (rows of ``(label, value[, role])``) to a terminal stream."""
     console = Console(stream)
     console.write(console.form(title, rows))
 
 
 class Progress:
+    """Animated multi-stage progress checklist; falls back to plain lines on non-TTY streams.
+
+    Advance with ``next(task)`` and close with ``finish()``; on a terminal the
+    checklist redraws in place, otherwise one line per stage change is printed.
+    """
     def __init__(self, tasks, stream=None):
         self.tasks, self.stream = tasks, stream or sys.stderr
         self.done = 0
@@ -228,6 +234,7 @@ class Progress:
 
 
 def web_host(value):
+    """Validate a ``--web-host`` IPv4 listen address; rejects multicast and broadcast addresses."""
     try:
         address = ipaddress.IPv4Address(value)
     except ipaddress.AddressValueError:
@@ -238,6 +245,7 @@ def web_host(value):
 
 
 def web_probe(host):
+    """Address used to health-check the web listener: loopback for a wildcard host, else the host itself."""
     return '127.0.0.1' if host == '0.0.0.0' else host
 
 
@@ -260,6 +268,7 @@ def lan_addresses():
 
 
 def urls(state):
+    """Web URLs of an instance: one entry for a fixed host, loopback plus LAN addresses for a wildcard host."""
     host, port = state.get('web_host', '127.0.0.1'), state['web_port']
     if host != '0.0.0.0':
         return [f'http://{host}:{port}']
@@ -343,6 +352,15 @@ def macos_shortcuts(root, state):
 
 
 def desktop_shortcuts(root, state, mode='auto'):
+    """Create desktop/application entries for an instance; ``mode`` is auto, always or never.
+
+    macOS gets signed ``.app`` bundles under ``~/Applications``; Linux gets
+    ``.desktop`` files in the applications directory (and the Desktop when it
+    exists). Entries are never written through symlinks, outside the user's
+    home, or over modified files. Content fingerprints are recorded in
+    ``state`` so the uninstaller can remove exactly what was created. Returns
+    a human-readable summary message.
+    """
     if mode == 'never':
         return '已跳过桌面入口'
     if sys.platform == 'darwin':
@@ -406,6 +424,12 @@ def desktop_shortcuts(root, state, mode='auto'):
 
 
 def welcome(root, state, started, desktop_message='', stream=None, clear=True):
+    """Print the post-install welcome screen: banner, access URLs, admin account, and management commands.
+
+    The admin password is shown inline only on a real TTY; when output is
+    redirected it goes exclusively to the controlling terminal, never to the
+    redirected stream.
+    """
     import shlex
     console = Console(stream)
     stream = console.stream
@@ -471,6 +495,7 @@ COMPONENT_DEFAULTS = dict(http_port=8034, ws_port=8035, web_port=3000,
 
 
 def component_values(state=None):
+    """Effective component ports and web host: platform-aware defaults overlaid with persisted install state."""
     values = dict(COMPONENT_DEFAULTS)
     if sys.platform in ('darwin', 'win32'):
         values['web_host'] = '127.0.0.1'
@@ -481,6 +506,12 @@ def component_values(state=None):
 
 
 def read_component_config(path):
+    """Parse a component YAML file: flat scalar entries only, ``schema_version: 1`` required.
+
+    Unknown or duplicate keys and non-scalar syntax raise ``ValueError``; the
+    grammar is deliberately minimal so the macOS bootstrap can read the file
+    before Python exists.
+    """
     import re
     values = {}
     text = Path(path).read_text(encoding='utf-8')
@@ -504,6 +535,7 @@ def read_component_config(path):
 
 
 def validate_components(values):
+    """Validate component values: distinct ports in 1024-65535, a valid non-overlapping Ability port range, and a legal web host. Returns ``values``."""
     ports = [values[k] for k in ('http_port', 'ws_port', 'web_port', 'runtime_port')]
     if any(type(p) is not int or not 1024 <= p <= 65535 for p in ports) or len(set(ports)) != 4:
         raise ValueError('Component ports must be distinct integers between 1024 and 65535')
@@ -517,6 +549,7 @@ def validate_components(values):
 
 
 def component_yaml(values):
+    """Render the canonical ``components.yaml`` text for validated component values (no secrets)."""
     validate_components(values)
     return ('# Semantic component ports. CLI options override this file. No secrets.\n'
             '# Flat YAML scalars only; comments and quoted scalars are supported.\n'
@@ -524,6 +557,7 @@ def component_yaml(values):
 
 
 def export_components(path, values):
+    """Write the component YAML to ``path`` (``'-'`` means stdout); never overwrites an existing file."""
     text = component_yaml(values)
     if str(path) == '-':
         print(text, end='')

@@ -927,6 +927,7 @@ def entry(args):
 
 
 def register(parser):
+    """Add the ``extension`` subcommand to an argparse subparsers object and bind it to ``entry``."""
     commands = parser.add_parser('extension', help='扩展场景: 清单查看、产物校验与安装')
     commands.add_argument('extension_action', choices=['list', 'show', 'verify', 'install', 'remove'])
     commands.add_argument('id', nargs='?', help='扩展标识，例如 libero / isaac')
